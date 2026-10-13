@@ -1,6 +1,7 @@
 package eu.exeris.caps.credentialstore.internal;
 
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.audit.AuditTrailBridge;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
@@ -49,9 +50,9 @@ class AuditAfterCommitTest {
         AuditTrailBridge audit = new AuditTrailBridge(recorder, clock);
         PasswordHashing hashing = new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(2));
         TokenPolicy tokens = TokenPolicy.defaults();
-        store = new DefaultCredentialStore(repository, hashing, LockoutPolicy.defaults(), null, audit, clock);
+        store = new DefaultCredentialStore(repository, hashing, LockoutPolicy.defaults(), PasswordPolicy.defaults(), null, audit, clock);
         verification = new DefaultAccountVerification(repository, dispatcher, audit, tokens, clock);
-        recovery = new DefaultCredentialRecovery(repository, hashing, dispatcher, null, audit, tokens, clock);
+        recovery = new DefaultCredentialRecovery(repository, hashing, dispatcher, null, audit, tokens, PasswordPolicy.defaults(), clock);
     }
 
     @Test

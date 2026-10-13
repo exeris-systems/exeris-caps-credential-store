@@ -3,6 +3,7 @@ package eu.exeris.caps.credentialstore.internal.repository;
 import eu.exeris.caps.credentialstore.CredentialStoreModule;
 import eu.exeris.caps.credentialstore.api.exception.CredentialAlreadyExistsException;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.CountingPasswordEncoder;
 import eu.exeris.caps.credentialstore.internal.DefaultAccountVerification;
@@ -272,7 +273,7 @@ class PostgresCredentialRepositoryLiveIT {
     void servicesOverPostgres() {
         InMemoryNotificationDispatcher dispatcher = new InMemoryNotificationDispatcher();
         PasswordHashing hashing = new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(4));
-        DefaultCredentialStore store = new DefaultCredentialStore(repository, hashing, POLICY, null, null, Clock.systemUTC());
+        DefaultCredentialStore store = new DefaultCredentialStore(repository, hashing, POLICY, PasswordPolicy.defaults(), null, null, Clock.systemUTC());
         DefaultAccountVerification verification = new DefaultAccountVerification(
                 repository, dispatcher, null, TokenPolicy.defaults(), Clock.systemUTC());
         UUID subject = UUID.randomUUID();

@@ -6,6 +6,7 @@ import eu.exeris.caps.credentialstore.api.exception.InvalidCredentialException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
 import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
 import eu.exeris.caps.credentialstore.internal.repository.CredentialRecord;
@@ -51,7 +52,7 @@ class DefaultCredentialStoreTest {
         sessionStore = new InMemorySessionStore();
         policy = new LockoutPolicy(5, Duration.ofMinutes(15), Duration.ofMinutes(15));
         store = new DefaultCredentialStore(repository, new PasswordHashing(encoder, new KdfConcurrencyThrottler(4)),
-                policy, sessionStore, null, clock);
+                policy, PasswordPolicy.defaults(), sessionStore, null, clock);
     }
 
     private UUID verifiedAccount(String login, char[] password) {

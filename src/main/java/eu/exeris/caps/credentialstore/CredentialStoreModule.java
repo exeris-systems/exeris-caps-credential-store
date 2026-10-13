@@ -5,6 +5,7 @@ import eu.exeris.caps.credentialstore.api.AccountVerification;
 import eu.exeris.caps.credentialstore.api.CredentialRecovery;
 import eu.exeris.caps.credentialstore.api.CredentialStore;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.DefaultAccountVerification;
 import eu.exeris.caps.credentialstore.internal.DefaultCredentialRecovery;
@@ -46,7 +47,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@link KernelPasswordEncoder} and a {@link TransactionalExecutor}) have no {@code ServiceLoader} lifecycle,
  * and ADR-099 obligation 6 forbids a cap from naming a driver class to find one. The composing SKU builds
  * the wired instance with {@link #CredentialStoreModule(TransactionalExecutor, KernelPasswordEncoder,
- * NotificationDispatcher, SessionStore, AuditRecorder, LockoutPolicy, TokenPolicy)}, and applies
+ * NotificationDispatcher, SessionStore, AuditRecorder, LockoutPolicy, TokenPolicy, PasswordPolicy)}, and applies
  * {@link #MIGRATIONS} to the database before it does. There is no in-memory store and no
  * fallback encoder: an instance without its dependencies refuses to hand out a service.
  *
@@ -108,6 +109,7 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
      *                               {@code AuditLogSinkRecorder}; this signature names no audit-trail type
      * @param lockoutPolicy          failed-attempt lockout; required
      * @param tokenPolicy            token lifetimes and issue cooldown; required
+     * @param passwordPolicy         length window of a password; required
      */
     public CredentialStoreModule(
             TransactionalExecutor tx,
@@ -116,7 +118,8 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
             SessionStore sessionStore,
             AuditRecorder auditRecorder,
             LockoutPolicy lockoutPolicy,
-            TokenPolicy tokenPolicy
+            TokenPolicy tokenPolicy,
+            PasswordPolicy passwordPolicy
     ) {
         this(
                 new PostgresCredentialRepository(Objects.requireNonNull(tx, "tx must not be null")),
@@ -127,6 +130,7 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
                 auditRecorder,
                 lockoutPolicy,
                 tokenPolicy,
+                passwordPolicy,
                 Clock.systemUTC()
         );
     }
@@ -141,12 +145,14 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
             AuditRecorder auditRecorder,
             LockoutPolicy lockoutPolicy,
             TokenPolicy tokenPolicy,
+            PasswordPolicy passwordPolicy,
             Clock clock
     ) {
         Objects.requireNonNull(repository, "repository must not be null");
         Objects.requireNonNull(notificationDispatcher, "notificationDispatcher must not be null");
         Objects.requireNonNull(lockoutPolicy, "lockoutPolicy must not be null");
         Objects.requireNonNull(tokenPolicy, "tokenPolicy must not be null");
+        Objects.requireNonNull(passwordPolicy, "passwordPolicy must not be null");
         Objects.requireNonNull(clock, "clock must not be null");
         PasswordHashing hashing = new PasswordHashing(
                 Objects.requireNonNull(passwordEncoder, "passwordEncoder must not be null"),
@@ -154,11 +160,11 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
         AuditTrailBridge auditTrail = auditRecorder != null ? new AuditTrailBridge(auditRecorder, clock) : null;
 
         this.credentialStore = new DefaultCredentialStore(
-                repository, hashing, lockoutPolicy, sessionStore, auditTrail, clock);
+                repository, hashing, lockoutPolicy, passwordPolicy, sessionStore, auditTrail, clock);
         this.accountVerification = new DefaultAccountVerification(
                 repository, notificationDispatcher, auditTrail, tokenPolicy, clock);
         this.credentialRecovery = new DefaultCredentialRecovery(
-                repository, hashing, notificationDispatcher, sessionStore, auditTrail, tokenPolicy, clock);
+                repository, hashing, notificationDispatcher, sessionStore, auditTrail, tokenPolicy, passwordPolicy, clock);
     }
 
     public CredentialStore credentialStore() {

@@ -3,6 +3,7 @@ package eu.exeris.caps.credentialstore.internal;
 import eu.exeris.caps.credentialstore.api.exception.InvalidTokenException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
@@ -47,8 +48,8 @@ class DefaultCredentialRecoveryTest {
         tokens = new TokenPolicy(Duration.ofHours(24), Duration.ofMinutes(15), Duration.ofSeconds(60));
         lockout = LockoutPolicy.defaults();
         PasswordHashing hashing = new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(2));
-        store = new DefaultCredentialStore(repository, hashing, lockout, sessions, null, clock);
-        recovery = new DefaultCredentialRecovery(repository, hashing, dispatcher, sessions, null, tokens, clock);
+        store = new DefaultCredentialStore(repository, hashing, lockout, PasswordPolicy.defaults(), sessions, null, clock);
+        recovery = new DefaultCredentialRecovery(repository, hashing, dispatcher, sessions, null, tokens, PasswordPolicy.defaults(), clock);
         subject = UUID.randomUUID();
         store.createCredential(subject, LOGIN, PASSWORD);
     }

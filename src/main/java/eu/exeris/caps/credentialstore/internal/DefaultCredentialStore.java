@@ -8,6 +8,7 @@ import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
 import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
 import eu.exeris.caps.credentialstore.api.model.LockoutState;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.internal.audit.AuditTrailBridge;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
 import eu.exeris.caps.credentialstore.internal.repository.CredentialRecord;
@@ -37,6 +38,7 @@ public final class DefaultCredentialStore implements CredentialStore {
     private final CredentialRepository repository;
     private final PasswordHashing hashing;
     private final LockoutPolicy lockoutPolicy;
+    private final PasswordPolicy passwordPolicy;
     private final SessionStore sessionStore;
     private final AuditTrailBridge auditTrail;
     private final Clock clock;
@@ -45,6 +47,7 @@ public final class DefaultCredentialStore implements CredentialStore {
             CredentialRepository repository,
             PasswordHashing hashing,
             LockoutPolicy lockoutPolicy,
+            PasswordPolicy passwordPolicy,
             SessionStore sessionStore,
             AuditTrailBridge auditTrail,
             Clock clock
@@ -52,6 +55,7 @@ public final class DefaultCredentialStore implements CredentialStore {
         this.repository = Objects.requireNonNull(repository, "repository must not be null");
         this.hashing = Objects.requireNonNull(hashing, "hashing must not be null");
         this.lockoutPolicy = Objects.requireNonNull(lockoutPolicy, "lockoutPolicy must not be null");
+        this.passwordPolicy = Objects.requireNonNull(passwordPolicy, "passwordPolicy must not be null");
         this.sessionStore = sessionStore;
         this.auditTrail = auditTrail;
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
@@ -61,7 +65,7 @@ public final class DefaultCredentialStore implements CredentialStore {
     public void createCredential(UUID subjectId, String loginIdentifier, char[] password) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
         String login = LoginIdentifiers.normalize(loginIdentifier);
-        requirePassword(password, PASSWORD_PARAM);
+        requireNewPassword(passwordPolicy, password, PASSWORD_PARAM);
 
         String hash = hashing.encode(password);
         if (!repository.insertCredential(subjectId, login, hash, clock.instant())) {
@@ -73,7 +77,7 @@ public final class DefaultCredentialStore implements CredentialStore {
     @Override
     public CredentialVerificationResult authenticate(String loginIdentifier, char[] password) {
         String login = LoginIdentifiers.normalize(loginIdentifier);
-        requirePassword(password, PASSWORD_PARAM);
+        requirePresentedPassword(passwordPolicy, password, PASSWORD_PARAM);
         Optional<CredentialRecord> credential = repository.findByLoginIdentifier(login);
         if (credential.isEmpty()) {
             hashing.burn(password);
@@ -85,7 +89,7 @@ public final class DefaultCredentialStore implements CredentialStore {
     @Override
     public CredentialVerificationResult verifyCredential(UUID subjectId, char[] password) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        requirePassword(password, PASSWORD_PARAM);
+        requirePresentedPassword(passwordPolicy, password, PASSWORD_PARAM);
         return check(subjectId, password);
     }
 
@@ -124,8 +128,8 @@ public final class DefaultCredentialStore implements CredentialStore {
     @Override
     public void changePassword(UUID subjectId, char[] currentPassword, char[] newPassword) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        requirePassword(currentPassword, "currentPassword");
-        requirePassword(newPassword, "newPassword");
+        requirePresentedPassword(passwordPolicy, currentPassword, "currentPassword");
+        requireNewPassword(passwordPolicy, newPassword, "newPassword");
 
         Instant now = clock.instant();
         Optional<CredentialRecord> reserved = repository.reserveAttempt(subjectId, lockoutPolicy, now);
@@ -202,9 +206,21 @@ public final class DefaultCredentialStore implements CredentialStore {
         }
     }
 
-    static void requirePassword(char[] password, String name) {
+    /** A password handed over for comparison: present and no longer than the policy allows. */
+    static void requirePresentedPassword(PasswordPolicy policy, char[] password, String name) {
         if (password == null || password.length == 0) {
             throw new IllegalArgumentException(name + " must not be null or empty");
+        }
+        if (password.length > policy.maxLength()) {
+            throw new IllegalArgumentException(name + " must be at most " + policy.maxLength() + " characters");
+        }
+    }
+
+    /** A password about to be set: within the policy's length window. Checked before any key derivation. */
+    static void requireNewPassword(PasswordPolicy policy, char[] password, String name) {
+        requirePresentedPassword(policy, password, name);
+        if (password.length < policy.minLength()) {
+            throw new IllegalArgumentException(name + " must be at least " + policy.minLength() + " characters");
         }
     }
 }

@@ -3,6 +3,7 @@ package eu.exeris.caps.credentialstore.internal;
 import eu.exeris.caps.credentialstore.api.CredentialRecovery;
 import eu.exeris.caps.credentialstore.api.exception.InvalidTokenException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.audit.AuditTrailBridge;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
@@ -35,6 +36,7 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
     private final SessionStore sessionStore;
     private final AuditTrailBridge auditTrail;
     private final TokenPolicy tokenPolicy;
+    private final PasswordPolicy passwordPolicy;
     private final Clock clock;
 
     public DefaultCredentialRecovery(
@@ -44,6 +46,7 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
             SessionStore sessionStore,
             AuditTrailBridge auditTrail,
             TokenPolicy tokenPolicy,
+            PasswordPolicy passwordPolicy,
             Clock clock
     ) {
         this.repository = Objects.requireNonNull(repository, "repository must not be null");
@@ -52,6 +55,7 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
         this.sessionStore = sessionStore;
         this.auditTrail = auditTrail;
         this.tokenPolicy = Objects.requireNonNull(tokenPolicy, "tokenPolicy must not be null");
+        this.passwordPolicy = Objects.requireNonNull(passwordPolicy, "passwordPolicy must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -80,7 +84,7 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
         if (rawToken == null || rawToken.isBlank()) {
             throw new IllegalArgumentException("rawToken must not be null or blank");
         }
-        DefaultCredentialStore.requirePassword(newPassword, "newPassword");
+        DefaultCredentialStore.requireNewPassword(passwordPolicy, newPassword, "newPassword");
 
         String tokenHash = SingleUseHashedToken.hashToken(rawToken);
         Instant now = clock.instant();
