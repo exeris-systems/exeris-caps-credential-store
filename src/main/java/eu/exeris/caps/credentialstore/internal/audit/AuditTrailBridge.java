@@ -1,42 +1,45 @@
 package eu.exeris.caps.credentialstore.internal.audit;
 
-import eu.exeris.caps.audittrail.api.AuditEvent;
-import eu.exeris.caps.audittrail.api.AuditLogSink;
+import eu.exeris.caps.credentialstore.spi.AuditRecorder;
 
-import java.time.Instant;
+import java.time.Clock;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Bridge for emitting compliance events to {@link AuditLogSink} when present.
+ * Emits security events to an {@link AuditRecorder} after the state change they describe has committed.
+ *
+ * <p>A recorder that throws loses that event and nothing else: the exception is logged and does not reach
+ * the caller, because the operation it reports has already happened and cannot be undone by failing the call.
  *
  * @since 0.1.0
  */
 public final class AuditTrailBridge {
 
-    private final AuditLogSink sink;
+    private static final System.Logger LOG = System.getLogger(AuditTrailBridge.class.getName());
 
-    public AuditTrailBridge(AuditLogSink sink) {
-        this.sink = sink;
+    private final AuditRecorder recorder;
+    private final Clock clock;
+
+    public AuditTrailBridge(AuditRecorder recorder, Clock clock) {
+        this.recorder = Objects.requireNonNull(recorder, "recorder must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     /**
-     * Emits an audit event if the underlying sink is configured.
+     * Emits an event; never throws.
      *
-     * @param action audit action name
+     * @param action    audit action name
      * @param subjectId affected subject identifier
-     * @param details event metadata
+     * @param details   event metadata
      */
     public void emit(String action, UUID subjectId, Map<String, Object> details) {
-        if (sink != null) {
-            sink.emit(AuditEvent.builder()
-                    .action(action)
-                    .resourceType("credential")
-                    .resourceId(subjectId != null ? subjectId.toString() : "")
-                    .actorId(subjectId != null ? subjectId.toString() : "system")
-                    .timestamp(Instant.now())
-                    .details(details)
-                    .build());
+        try {
+            recorder.record(action, subjectId, details, clock.instant());
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "audit event " + action + " was not recorded: " + e.getClass().getName(), e);
         }
     }
 }

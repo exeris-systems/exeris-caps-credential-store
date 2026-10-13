@@ -14,6 +14,7 @@ import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
 import eu.exeris.caps.credentialstore.internal.repository.CredentialRepository;
 import eu.exeris.caps.credentialstore.internal.repository.PostgresCredentialRepository;
+import eu.exeris.caps.credentialstore.spi.AuditRecorder;
 import eu.exeris.caps.credentialstore.spi.NotificationDispatcher;
 import eu.exeris.caps.credentialstore.spi.SessionStore;
 import eu.exeris.kernel.spi.persistence.TransactionalExecutor;
@@ -45,9 +46,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@link KernelPasswordEncoder} and a {@link TransactionalExecutor}) have no {@code ServiceLoader} lifecycle,
  * and ADR-099 obligation 6 forbids a cap from naming a driver class to find one. The composing SKU builds
  * the wired instance with {@link #CredentialStoreModule(TransactionalExecutor, KernelPasswordEncoder,
- * NotificationDispatcher, SessionStore, AuditLogSink, LockoutPolicy, TokenPolicy)}, and applies
+ * NotificationDispatcher, SessionStore, AuditRecorder, LockoutPolicy, TokenPolicy)}, and applies
  * {@link #MIGRATIONS} to the database before it does. There is no in-memory store and no
  * fallback encoder: an instance without its dependencies refuses to hand out a service.
+ *
+ * <p>The {@code @Requires} edges are all declared {@code optional = true}, and that is the capability graph's
+ * view only: a capability graph resolves edges between {@code @CapabilityModule} providers, and a kernel SPI
+ * or a SKU-supplied implementation is not one, so a mandatory edge would never resolve. The wiring
+ * constructor is the authority: the executor, the encoder, the dispatcher and both policies are required
+ * there, the session store and the audit recorder may be {@code null}. Only the audit-trail capability's jar
+ * is optional on the class path, and no signature of this class names one of its types.
  *
  * @since 0.1.0
  */
@@ -95,7 +103,9 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
      * @param notificationDispatcher delivery of verification and reset tokens; required
      * @param sessionStore           session revocation on a password change or reset; {@code null} when the
      *                               composition carries no session store
-     * @param auditLogSink           security audit sink; {@code null} when the composition carries none
+     * @param auditRecorder          security audit receiver; {@code null} when the composition carries none.
+     *                               A composition with the audit-trail capability passes an
+     *                               {@code AuditLogSinkRecorder}; this signature names no audit-trail type
      * @param lockoutPolicy          failed-attempt lockout; required
      * @param tokenPolicy            token lifetimes and issue cooldown; required
      */
@@ -104,7 +114,7 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
             KernelPasswordEncoder passwordEncoder,
             NotificationDispatcher notificationDispatcher,
             SessionStore sessionStore,
-            AuditLogSink auditLogSink,
+            AuditRecorder auditRecorder,
             LockoutPolicy lockoutPolicy,
             TokenPolicy tokenPolicy
     ) {
@@ -114,7 +124,7 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
                 new KdfConcurrencyThrottler(),
                 notificationDispatcher,
                 sessionStore,
-                auditLogSink != null ? new AuditTrailBridge(auditLogSink) : null,
+                auditRecorder,
                 lockoutPolicy,
                 tokenPolicy,
                 Clock.systemUTC()
@@ -128,7 +138,7 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
             KdfConcurrencyThrottler throttler,
             NotificationDispatcher notificationDispatcher,
             SessionStore sessionStore,
-            AuditTrailBridge auditTrail,
+            AuditRecorder auditRecorder,
             LockoutPolicy lockoutPolicy,
             TokenPolicy tokenPolicy,
             Clock clock
@@ -141,6 +151,7 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
         PasswordHashing hashing = new PasswordHashing(
                 Objects.requireNonNull(passwordEncoder, "passwordEncoder must not be null"),
                 Objects.requireNonNull(throttler, "throttler must not be null"));
+        AuditTrailBridge auditTrail = auditRecorder != null ? new AuditTrailBridge(auditRecorder, clock) : null;
 
         this.credentialStore = new DefaultCredentialStore(
                 repository, hashing, lockoutPolicy, sessionStore, auditTrail, clock);
