@@ -58,11 +58,11 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
     @Override
     public void requestReset(String loginIdentifier) {
         String login = LoginIdentifiers.normalize(loginIdentifier);
-        Optional<CredentialRecord> record = repository.findByLoginIdentifier(login);
-        if (record.isEmpty()) {
+        Optional<CredentialRecord> credential = repository.findByLoginIdentifier(login);
+        if (credential.isEmpty()) {
             return;
         }
-        UUID subjectId = record.get().subjectId();
+        UUID subjectId = credential.get().subjectId();
         Instant now = clock.instant();
         SingleUseHashedToken.GeneratedToken token = SingleUseHashedToken.generate();
         boolean issued = repository.issueResetToken(
@@ -71,7 +71,7 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
         if (!issued) {
             return;
         }
-        notificationDispatcher.sendPasswordResetToken(subjectId, record.get().loginIdentifier(), token.rawToken());
+        notificationDispatcher.sendPasswordResetToken(subjectId, credential.get().loginIdentifier(), token.rawToken());
         audit("RESET_REQUESTED", subjectId, Map.of());
     }
 
@@ -87,10 +87,10 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
         TokenRecord token = repository.findResetToken(tokenHash)
                 .filter(t -> t.usableAt(now))
                 .orElseThrow(DefaultCredentialRecovery::invalidToken);
-        CredentialRecord record = repository.findBySubject(token.subjectId())
+        CredentialRecord credential = repository.findBySubject(token.subjectId())
                 .orElseThrow(DefaultCredentialRecovery::invalidToken);
 
-        if (hashing.matches(newPassword, record.passwordHash())) {
+        if (hashing.matches(newPassword, credential.passwordHash())) {
             throw new SamePasswordException("New password cannot be identical to current password");
         }
         String newHash = hashing.encode(newPassword);

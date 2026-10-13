@@ -45,11 +45,11 @@ public final class DefaultAccountVerification implements AccountVerification {
     @Override
     public void issueVerification(String loginIdentifier) {
         String login = LoginIdentifiers.normalize(loginIdentifier);
-        Optional<CredentialRecord> record = repository.findByLoginIdentifier(login);
-        if (record.isEmpty() || record.get().emailVerified()) {
+        Optional<CredentialRecord> credential = repository.findByLoginIdentifier(login);
+        if (credential.isEmpty() || credential.get().emailVerified()) {
             return;
         }
-        UUID subjectId = record.get().subjectId();
+        UUID subjectId = credential.get().subjectId();
         Instant now = clock.instant();
         SingleUseHashedToken.GeneratedToken token = SingleUseHashedToken.generate();
         boolean issued = repository.issueVerificationToken(
@@ -58,7 +58,7 @@ public final class DefaultAccountVerification implements AccountVerification {
         if (!issued) {
             return;
         }
-        notificationDispatcher.sendVerificationToken(subjectId, record.get().loginIdentifier(), token.rawToken());
+        notificationDispatcher.sendVerificationToken(subjectId, credential.get().loginIdentifier(), token.rawToken());
         if (auditTrail != null) {
             auditTrail.emit("VERIFICATION_ISSUED", subjectId, Map.of());
         }

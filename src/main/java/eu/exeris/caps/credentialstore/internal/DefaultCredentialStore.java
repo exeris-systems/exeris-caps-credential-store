@@ -32,6 +32,8 @@ import java.util.UUID;
  */
 public final class DefaultCredentialStore implements CredentialStore {
 
+    private static final String PASSWORD_PARAM = "password";
+
     private final CredentialRepository repository;
     private final PasswordHashing hashing;
     private final LockoutPolicy lockoutPolicy;
@@ -59,7 +61,7 @@ public final class DefaultCredentialStore implements CredentialStore {
     public void createCredential(UUID subjectId, String loginIdentifier, char[] password) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
         String login = LoginIdentifiers.normalize(loginIdentifier);
-        requirePassword(password, "password");
+        requirePassword(password, PASSWORD_PARAM);
 
         String hash = hashing.encode(password);
         if (!repository.insertCredential(subjectId, login, hash, clock.instant())) {
@@ -71,19 +73,19 @@ public final class DefaultCredentialStore implements CredentialStore {
     @Override
     public CredentialVerificationResult authenticate(String loginIdentifier, char[] password) {
         String login = LoginIdentifiers.normalize(loginIdentifier);
-        requirePassword(password, "password");
-        Optional<CredentialRecord> record = repository.findByLoginIdentifier(login);
-        if (record.isEmpty()) {
+        requirePassword(password, PASSWORD_PARAM);
+        Optional<CredentialRecord> credential = repository.findByLoginIdentifier(login);
+        if (credential.isEmpty()) {
             hashing.burn(password);
             return CredentialVerificationResult.invalid();
         }
-        return check(record.get().subjectId(), password);
+        return check(credential.get().subjectId(), password);
     }
 
     @Override
     public CredentialVerificationResult verifyCredential(UUID subjectId, char[] password) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        requirePassword(password, "password");
+        requirePassword(password, PASSWORD_PARAM);
         return check(subjectId, password);
     }
 
@@ -96,24 +98,24 @@ public final class DefaultCredentialStore implements CredentialStore {
                     .map(CredentialVerificationResult::locked)
                     .orElseGet(CredentialVerificationResult::invalid);
         }
-        CredentialRecord record = reserved.get();
-        if (!hashing.matches(password, record.passwordHash())) {
+        CredentialRecord credential = reserved.get();
+        if (!hashing.matches(password, credential.passwordHash())) {
             Optional<Instant> lockedUntil = repository.lockIfExhausted(subjectId, lockoutPolicy, now);
             if (lockedUntil.isPresent()) {
                 audit("ACCOUNT_LOCKED", subjectId, Map.of("lockedUntil", lockedUntil.get().toString()));
                 return CredentialVerificationResult.locked(lockedUntil.get());
             }
-            audit("AUTH_FAILURE", subjectId, Map.of("failedAttempts", record.failedLoginAttempts()));
+            audit("AUTH_FAILURE", subjectId, Map.of("failedAttempts", credential.failedLoginAttempts()));
             return CredentialVerificationResult.invalid();
         }
 
         repository.clearFailures(subjectId, now);
-        if (!record.emailVerified()) {
+        if (!credential.emailVerified()) {
             audit("AUTH_UNVERIFIED", subjectId, Map.of());
             return CredentialVerificationResult.unverified(subjectId);
         }
-        if (hashing.needsRehash(record.passwordHash())) {
-            repository.replacePasswordHash(subjectId, record.passwordHash(), hashing.encode(password), now);
+        if (hashing.needsRehash(credential.passwordHash())) {
+            repository.replacePasswordHash(subjectId, credential.passwordHash(), hashing.encode(password), now);
         }
         audit("AUTH_SUCCESS", subjectId, Map.of());
         return CredentialVerificationResult.success(subjectId);
@@ -135,23 +137,23 @@ public final class DefaultCredentialStore implements CredentialStore {
             }
             throw new InvalidCredentialException("Current password does not match");
         }
-        CredentialRecord record = reserved.get();
-        if (!hashing.matches(currentPassword, record.passwordHash())) {
+        CredentialRecord credential = reserved.get();
+        if (!hashing.matches(currentPassword, credential.passwordHash())) {
             Optional<Instant> lockedUntil = repository.lockIfExhausted(subjectId, lockoutPolicy, now);
             if (lockedUntil.isPresent()) {
                 audit("ACCOUNT_LOCKED", subjectId, Map.of("lockedUntil", lockedUntil.get().toString()));
                 throw new AccountLockedException("Account is locked", lockedUntil.get());
             }
-            audit("AUTH_FAILURE", subjectId, Map.of("failedAttempts", record.failedLoginAttempts()));
+            audit("AUTH_FAILURE", subjectId, Map.of("failedAttempts", credential.failedLoginAttempts()));
             throw new InvalidCredentialException("Current password does not match");
         }
         repository.clearFailures(subjectId, now);
-        if (hashing.matches(newPassword, record.passwordHash())) {
+        if (hashing.matches(newPassword, credential.passwordHash())) {
             throw new SamePasswordException("New password cannot be identical to current password");
         }
 
         String newHash = hashing.encode(newPassword);
-        OptionalLong tokenVersion = repository.changePassword(subjectId, record.passwordHash(), newHash, now);
+        OptionalLong tokenVersion = repository.changePassword(subjectId, credential.passwordHash(), newHash, now);
         if (tokenVersion.isEmpty()) {
             throw new InvalidCredentialException("Current password does not match");
         }
