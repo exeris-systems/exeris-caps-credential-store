@@ -4,14 +4,16 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Internal entity mapping for {@code credential_records}.
+ * One row of {@code credential_records}.
  */
 public record CredentialRecord(
         UUID subjectId,
+        String loginIdentifier,
         String passwordHash,
         boolean emailVerified,
         Instant verifiedAt,
         int failedLoginAttempts,
+        Instant failureWindowStartedAt,
         Instant lockedUntil,
         long tokenVersion,
         Instant createdAt,

@@ -4,7 +4,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Internal entity mapping for verification and reset token tables.
+ * One row of a token table. {@code consumedAt} is the time the token stopped being usable, whether it was
+ * consumed or superseded by a newer token.
  */
 public record TokenRecord(
         UUID id,
@@ -14,4 +15,12 @@ public record TokenRecord(
         Instant createdAt,
         Instant consumedAt
 ) {
+
+    /**
+     * @param now the current time
+     * @return {@code true} if the token is neither consumed, superseded nor expired at {@code now}
+     */
+    public boolean usableAt(Instant now) {
+        return consumedAt == null && expiresAt.isAfter(now);
+    }
 }

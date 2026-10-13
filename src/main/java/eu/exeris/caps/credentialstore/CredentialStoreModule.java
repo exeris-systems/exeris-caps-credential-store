@@ -5,19 +5,17 @@ import eu.exeris.caps.credentialstore.api.AccountVerification;
 import eu.exeris.caps.credentialstore.api.CredentialRecovery;
 import eu.exeris.caps.credentialstore.api.CredentialStore;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.DefaultAccountVerification;
 import eu.exeris.caps.credentialstore.internal.DefaultCredentialRecovery;
 import eu.exeris.caps.credentialstore.internal.DefaultCredentialStore;
 import eu.exeris.caps.credentialstore.internal.audit.AuditTrailBridge;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
+import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
 import eu.exeris.caps.credentialstore.internal.repository.CredentialRepository;
-import eu.exeris.caps.credentialstore.internal.repository.InMemoryCredentialRepository;
 import eu.exeris.caps.credentialstore.internal.repository.PostgresCredentialRepository;
-import eu.exeris.caps.credentialstore.spi.InMemoryNotificationDispatcher;
-import eu.exeris.caps.credentialstore.spi.InMemorySessionStore;
 import eu.exeris.caps.credentialstore.spi.NotificationDispatcher;
 import eu.exeris.caps.credentialstore.spi.SessionStore;
-import eu.exeris.caps.credentialstore.internal.crypto.Pbkdf2PasswordEncoder;
 import eu.exeris.kernel.spi.persistence.TransactionalExecutor;
 import eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder;
 import eu.exeris.sdk.annotation.capability.CapabilityLifecycle;
@@ -26,7 +24,9 @@ import eu.exeris.sdk.annotation.capability.Provides;
 import eu.exeris.sdk.annotation.capability.Requires;
 import eu.exeris.sdk.composition.lifecycle.CapabilityLifecycleHooks;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -40,19 +40,35 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>{@link CredentialRecovery} (forgot password and reset flow)</li>
  * </ul>
  *
+ * <p>The composition conductor instantiates this class through its no-arg constructor to run the lifecycle
+ * hooks, and that instance carries no services: the kernel SPIs this cap needs (a
+ * {@link KernelPasswordEncoder} and a {@link TransactionalExecutor}) have no {@code ServiceLoader} lifecycle,
+ * and ADR-099 obligation 6 forbids a cap from naming a driver class to find one. The composing SKU builds
+ * the wired instance with {@link #CredentialStoreModule(TransactionalExecutor, KernelPasswordEncoder,
+ * NotificationDispatcher, SessionStore, AuditLogSink, LockoutPolicy, TokenPolicy)}, and applies
+ * {@link #MIGRATIONS} to the database before it does. There is no in-memory store and no
+ * fallback encoder: an instance without its dependencies refuses to hand out a service.
+ *
  * @since 0.1.0
  */
 @CapabilityModule
 @CapabilityLifecycle
-@Provides(service = CredentialStore.class, version = "1.0.0")
-@Provides(service = AccountVerification.class, version = "1.0.0")
-@Provides(service = CredentialRecovery.class, version = "1.0.0")
-@Requires(service = NotificationDispatcher.class, versionRange = "[1.0.0,2.0.0)", optional = true)
+@Provides(service = CredentialStore.class, version = "0.1.0")
+@Provides(service = AccountVerification.class, version = "0.1.0")
+@Provides(service = CredentialRecovery.class, version = "0.1.0")
+@Requires(service = NotificationDispatcher.class, versionRange = "[0.1.0,0.2.0)", optional = true)
 @Requires(service = KernelPasswordEncoder.class, optional = true)
 @Requires(service = TransactionalExecutor.class, optional = true)
-@Requires(service = SessionStore.class, versionRange = "[1.0.0,2.0.0)", optional = true)
-@Requires(service = AuditLogSink.class, versionRange = "[1.0.0,2.0.0)", optional = true)
+@Requires(service = SessionStore.class, versionRange = "[0.1.0,0.2.0)", optional = true)
+@Requires(service = AuditLogSink.class, versionRange = "[0.1.0,0.2.0)", optional = true)
 public final class CredentialStoreModule implements CapabilityLifecycleHooks {
+
+    /**
+     * The schema migrations of this capability, in the order they apply, as classpath resource paths. The
+     * capability does not apply them itself; the composing SKU does, before the first service call.
+     */
+    public static final List<String> MIGRATIONS = List.of(
+            "db/migration/exeris-caps-credential-store/V1__create_credential_store.sql");
 
     private final CredentialStore credentialStore;
     private final AccountVerification accountVerification;
@@ -62,105 +78,96 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
     private final AtomicBoolean ready = new AtomicBoolean(false);
 
     /**
-     * Public no-arg constructor for reflective instantiation by the composition conductor.
-     * Enforces fail-closed resolution of an Argon2id password encoder (ADR-099).
+     * Lifecycle-only instance for reflective instantiation by the composition conductor. Its service
+     * accessors throw {@link IllegalStateException}.
      */
     public CredentialStoreModule() {
-        this(
-                new InMemoryCredentialRepository(),
-                resolvePasswordEncoderOrFail(),
-                new KdfConcurrencyThrottler(),
-                LockoutPolicy.defaults(),
-                new InMemoryNotificationDispatcher(),
-                new InMemorySessionStore(),
-                null
-        );
+        this.credentialStore = null;
+        this.accountVerification = null;
+        this.credentialRecovery = null;
     }
 
     /**
-     * Constructor wiring with a PostgreSQL {@link TransactionalExecutor}.
+     * Wired instance over PostgreSQL through the kernel Persistence SPI.
+     *
+     * @param tx                     kernel transactional executor; required
+     * @param passwordEncoder        kernel password encoder, Argon2id in a production composition; required
+     * @param notificationDispatcher delivery of verification and reset tokens; required
+     * @param sessionStore           session revocation on a password change or reset; {@code null} when the
+     *                               composition carries no session store
+     * @param auditLogSink           security audit sink; {@code null} when the composition carries none
+     * @param lockoutPolicy          failed-attempt lockout; required
+     * @param tokenPolicy            token lifetimes and issue cooldown; required
      */
     public CredentialStoreModule(
             TransactionalExecutor tx,
             KernelPasswordEncoder passwordEncoder,
-            LockoutPolicy lockoutPolicy,
             NotificationDispatcher notificationDispatcher,
             SessionStore sessionStore,
-            AuditLogSink auditLogSink
+            AuditLogSink auditLogSink,
+            LockoutPolicy lockoutPolicy,
+            TokenPolicy tokenPolicy
     ) {
         this(
-                new PostgresCredentialRepository(tx),
-                Objects.requireNonNull(passwordEncoder, "KernelPasswordEncoder must be explicitly provided (Argon2id). Silent PBKDF2 fallback is forbidden per ADR-099."),
+                new PostgresCredentialRepository(Objects.requireNonNull(tx, "tx must not be null")),
+                passwordEncoder,
                 new KdfConcurrencyThrottler(),
-                lockoutPolicy != null ? lockoutPolicy : LockoutPolicy.defaults(),
-                notificationDispatcher != null ? notificationDispatcher : new InMemoryNotificationDispatcher(),
-                sessionStore != null ? sessionStore : new InMemorySessionStore(),
-                auditLogSink != null ? new AuditTrailBridge(auditLogSink) : null
+                notificationDispatcher,
+                sessionStore,
+                auditLogSink != null ? new AuditTrailBridge(auditLogSink) : null,
+                lockoutPolicy,
+                tokenPolicy,
+                Clock.systemUTC()
         );
     }
 
-    private static KernelPasswordEncoder resolvePasswordEncoderOrFail() {
-        try {
-            Class<?> argon2Class = Class.forName("eu.exeris.kernel.community.security.Argon2idPasswordEncoder");
-            Class<?> configClass = Class.forName("eu.exeris.kernel.spi.security.credentials.PasswordEncoderConfig");
-            Object defaultConfig = configClass.getMethod("defaults").invoke(null);
-            return (KernelPasswordEncoder) argon2Class.getConstructor(configClass).newInstance(defaultConfig);
-        } catch (Throwable ignored) {
-        }
-        throw new IllegalStateException("KernelPasswordEncoder (Argon2id) must be explicitly provided. Silent fallback to PBKDF2 is forbidden per ADR-099.");
-    }
-
-    /**
-     * Constructor wiring with custom repository and dependencies.
-     */
-    public CredentialStoreModule(
+    /** Wiring over an internal repository; package-private because its parameter types are internal. */
+    CredentialStoreModule(
             CredentialRepository repository,
             KernelPasswordEncoder passwordEncoder,
             KdfConcurrencyThrottler throttler,
-            LockoutPolicy lockoutPolicy,
             NotificationDispatcher notificationDispatcher,
             SessionStore sessionStore,
-            AuditTrailBridge auditTrail
+            AuditTrailBridge auditTrail,
+            LockoutPolicy lockoutPolicy,
+            TokenPolicy tokenPolicy,
+            Clock clock
     ) {
         Objects.requireNonNull(repository, "repository must not be null");
-        Objects.requireNonNull(passwordEncoder, "passwordEncoder must not be null");
-        Objects.requireNonNull(throttler, "throttler must not be null");
-        Objects.requireNonNull(lockoutPolicy, "lockoutPolicy must not be null");
         Objects.requireNonNull(notificationDispatcher, "notificationDispatcher must not be null");
+        Objects.requireNonNull(lockoutPolicy, "lockoutPolicy must not be null");
+        Objects.requireNonNull(tokenPolicy, "tokenPolicy must not be null");
+        Objects.requireNonNull(clock, "clock must not be null");
+        PasswordHashing hashing = new PasswordHashing(
+                Objects.requireNonNull(passwordEncoder, "passwordEncoder must not be null"),
+                Objects.requireNonNull(throttler, "throttler must not be null"));
 
         this.credentialStore = new DefaultCredentialStore(
-                repository,
-                passwordEncoder,
-                throttler,
-                lockoutPolicy,
-                sessionStore,
-                auditTrail
-        );
+                repository, hashing, lockoutPolicy, sessionStore, auditTrail, clock);
         this.accountVerification = new DefaultAccountVerification(
-                repository,
-                notificationDispatcher,
-                auditTrail
-        );
+                repository, notificationDispatcher, auditTrail, tokenPolicy, clock);
         this.credentialRecovery = new DefaultCredentialRecovery(
-                repository,
-                passwordEncoder,
-                throttler,
-                notificationDispatcher,
-                sessionStore,
-                auditTrail
-        );
+                repository, hashing, notificationDispatcher, sessionStore, auditTrail, tokenPolicy, clock);
     }
 
     public CredentialStore credentialStore() {
-        return credentialStore;
+        return wired(credentialStore);
     }
 
     public AccountVerification accountVerification() {
-        return accountVerification;
+        return wired(accountVerification);
     }
 
     public CredentialRecovery credentialRecovery() {
-        return credentialRecovery;
+        return wired(credentialRecovery);
+    }
+
+    private static <T> T wired(T service) {
+        if (service == null) {
+            throw new IllegalStateException("CredentialStoreModule was instantiated without its dependencies; "
+                    + "the composing SKU supplies them through the wiring constructor");
+        }
+        return service;
     }
 
     @Override

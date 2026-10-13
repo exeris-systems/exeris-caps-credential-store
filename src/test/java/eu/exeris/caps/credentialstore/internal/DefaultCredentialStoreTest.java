@@ -1,305 +1,384 @@
 package eu.exeris.caps.credentialstore.internal;
 
 import eu.exeris.caps.credentialstore.api.exception.AccountLockedException;
+import eu.exeris.caps.credentialstore.api.exception.CredentialAlreadyExistsException;
 import eu.exeris.caps.credentialstore.api.exception.InvalidCredentialException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
 import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
-import eu.exeris.caps.credentialstore.api.model.LockoutState;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
+import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
+import eu.exeris.caps.credentialstore.internal.repository.CredentialRecord;
 import eu.exeris.caps.credentialstore.internal.repository.InMemoryCredentialRepository;
 import eu.exeris.caps.credentialstore.spi.InMemorySessionStore;
-import eu.exeris.kernel.community.security.Argon2idPasswordEncoder;
-import eu.exeris.kernel.spi.security.credentials.PasswordEncoderConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DisplayName("DefaultCredentialStore Unit Tests")
+@DisplayName("DefaultCredentialStore")
 class DefaultCredentialStoreTest {
 
+    private static final String LOGIN = "user@exeris.eu";
+    private static final char[] PASSWORD = "SecretPassword123!".toCharArray();
+    private static final char[] WRONG = "WrongPassword123!".toCharArray();
+
     private InMemoryCredentialRepository repository;
-    private Argon2idPasswordEncoder passwordEncoder;
-    private KdfConcurrencyThrottler throttler;
-    private LockoutPolicy lockoutPolicy;
+    private CountingPasswordEncoder encoder;
+    private MutableClock clock;
     private InMemorySessionStore sessionStore;
-    private DefaultCredentialStore credentialStore;
+    private LockoutPolicy policy;
+    private DefaultCredentialStore store;
 
     @BeforeEach
     void setUp() {
         repository = new InMemoryCredentialRepository();
-        // Use minimal Argon2id cost parameters to make test suite blazingly fast
-        passwordEncoder = new Argon2idPasswordEncoder(new PasswordEncoderConfig(8192, 1, 1, 16));
-        throttler = new KdfConcurrencyThrottler(4);
-        lockoutPolicy = new LockoutPolicy(5, Duration.ofMinutes(15));
+        encoder = new CountingPasswordEncoder();
+        clock = new MutableClock(Instant.parse("2026-10-13T12:00:00Z"));
         sessionStore = new InMemorySessionStore();
-        credentialStore = new DefaultCredentialStore(
-                repository,
-                passwordEncoder,
-                throttler,
-                lockoutPolicy,
-                sessionStore,
-                null
-        );
+        policy = new LockoutPolicy(5, Duration.ofMinutes(15), Duration.ofMinutes(15));
+        store = new DefaultCredentialStore(repository, new PasswordHashing(encoder, new KdfConcurrencyThrottler(4)),
+                policy, sessionStore, null, clock);
     }
 
-    @Test
-    @DisplayName("set credential and verify successfully with matching password")
-    void setAndVerifySuccess() {
-        UUID subjectId = UUID.randomUUID();
-        char[] password = "SecretPassword123!".toCharArray();
-
-        credentialStore.setCredential(subjectId, password);
-
-        CredentialVerificationResult result = credentialStore.verifyCredential(subjectId, password);
-        assertThat(result.isSuccess()).isTrue();
-        assertThat(result.status()).isEqualTo(CredentialVerificationResult.Status.SUCCESS);
-        assertThat(result.lockedUntil()).isNull();
+    private UUID verifiedAccount(String login, char[] password) {
+        UUID subject = UUID.randomUUID();
+        store.createCredential(subject, login, password);
+        markVerified(subject);
+        return subject;
     }
 
-    @Test
-    @DisplayName("verify non-existent subject returns INVALID")
-    void verifyNonExistentSubjectReturnsInvalid() {
-        UUID unknown = UUID.randomUUID();
-        CredentialVerificationResult result = credentialStore.verifyCredential(unknown, "password".toCharArray());
-        assertThat(result.isInvalid()).isTrue();
+    private void markVerified(UUID subject) {
+        String hash = "%064x".formatted(subject.getMostSignificantBits() & Long.MAX_VALUE);
+        Instant now = clock.instant();
+        assertThat(repository.issueVerificationToken(UUID.randomUUID(), subject, hash, now.plusSeconds(60), now,
+                now.minusSeconds(60))).isTrue();
+        assertThat(repository.consumeVerificationToken(hash, now)).contains(subject);
     }
 
-    @Test
-    @DisplayName("failed password verification increments count and returns INVALID")
-    void failedVerificationIncrementsCount() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "correctPassword".toCharArray());
+    @Nested
+    @DisplayName("createCredential is insert-only")
+    class Create {
 
-        CredentialVerificationResult result = credentialStore.verifyCredential(subjectId, "wrongPassword".toCharArray());
-        assertThat(result.isInvalid()).isTrue();
+        @Test
+        @DisplayName("stores an unverified credential under the normalised login")
+        void storesUnverified() {
+            UUID subject = UUID.randomUUID();
 
-        LockoutState state = credentialStore.getLockoutState(subjectId);
-        assertThat(state.failedAttempts()).isEqualTo(1);
-        assertThat(state.isLocked(Instant.now())).isFalse();
-    }
+            store.createCredential(subject, "  User@Exeris.EU ", PASSWORD);
 
-    @Test
-    @DisplayName("5 consecutive failed logins trigger account lockout")
-    void consecutiveFailedLoginsTriggerLockout() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "correctPassword".toCharArray());
-
-        for (int i = 1; i <= 4; i++) {
-            CredentialVerificationResult result = credentialStore.verifyCredential(subjectId, "wrong".toCharArray());
-            assertThat(result.isInvalid()).isTrue();
-            assertThat(credentialStore.getLockoutState(subjectId).failedAttempts()).isEqualTo(i);
+            CredentialRecord credential = repository.findBySubject(subject).orElseThrow();
+            assertThat(credential.loginIdentifier()).isEqualTo(LOGIN);
+            assertThat(credential.emailVerified()).isFalse();
+            assertThat(credential.passwordHash()).startsWith("$argon2id$");
+            assertThat(store.isVerified(subject)).isFalse();
         }
 
-        // 5th failed attempt -> LOCKED
-        CredentialVerificationResult lockResult = credentialStore.verifyCredential(subjectId, "wrong".toCharArray());
-        assertThat(lockResult.isLocked()).isTrue();
-        assertThat(lockResult.status()).isEqualTo(CredentialVerificationResult.Status.LOCKED);
-        assertThat(lockResult.lockedUntil()).isAfter(Instant.now());
+        @Test
+        @DisplayName("refuses a subject that already has a credential and leaves its password unchanged")
+        void refusesExistingSubject() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            String before = repository.findBySubject(subject).orElseThrow().passwordHash();
 
-        LockoutState lockedState = credentialStore.getLockoutState(subjectId);
-        assertThat(lockedState.failedAttempts()).isEqualTo(5);
-        assertThat(lockedState.isLocked(Instant.now())).isTrue();
+            char[] attackerPassword = "Attacker123!".toCharArray();
+            assertThatThrownBy(() -> store.createCredential(subject, "other@exeris.eu", attackerPassword))
+                    .isInstanceOf(CredentialAlreadyExistsException.class)
+                    .hasMessageNotContaining(subject.toString())
+                    .hasMessageNotContaining("other@exeris.eu");
 
-        // While locked, even correct password returns LOCKED
-        CredentialVerificationResult whileLockedResult = credentialStore.verifyCredential(subjectId, "correctPassword".toCharArray());
-        assertThat(whileLockedResult.isLocked()).isTrue();
-    }
-
-    @Test
-    @DisplayName("clearLockout resets failed attempts and unlocks account")
-    void clearLockoutUnlocksAccount() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "correctPassword".toCharArray());
-
-        for (int i = 1; i <= 5; i++) {
-            credentialStore.verifyCredential(subjectId, "wrong".toCharArray());
-        }
-        assertThat(credentialStore.getLockoutState(subjectId).isLocked(Instant.now())).isTrue();
-
-        credentialStore.clearLockout(subjectId);
-
-        LockoutState state = credentialStore.getLockoutState(subjectId);
-        assertThat(state.failedAttempts()).isZero();
-        assertThat(state.isLocked(Instant.now())).isFalse();
-
-        // Verification with correct password now succeeds
-        CredentialVerificationResult result = credentialStore.verifyCredential(subjectId, "correctPassword".toCharArray());
-        assertThat(result.isSuccess()).isTrue();
-    }
-
-    @Test
-    @DisplayName("successful verification resets failed attempts counter")
-    void successfulVerificationResetsFailedCounter() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "correctPassword".toCharArray());
-
-        credentialStore.verifyCredential(subjectId, "wrong".toCharArray());
-        credentialStore.verifyCredential(subjectId, "wrong".toCharArray());
-        assertThat(credentialStore.getLockoutState(subjectId).failedAttempts()).isEqualTo(2);
-
-        CredentialVerificationResult result = credentialStore.verifyCredential(subjectId, "correctPassword".toCharArray());
-        assertThat(result.isSuccess()).isTrue();
-        assertThat(credentialStore.getLockoutState(subjectId).failedAttempts()).isZero();
-    }
-
-    @Test
-    @DisplayName("verifyDummy runs without error on dummy hash")
-    void verifyDummyRunsSuccessfully() {
-        credentialStore.verifyDummy("anyCandidatePassword".toCharArray());
-    }
-
-    @Test
-    @DisplayName("changePassword succeeds with correct current password and bumps token version and revokes sessions")
-    void changePasswordSuccess() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "OldPassword123!".toCharArray());
-        assertThat(credentialStore.getTokenVersion(subjectId)).isEqualTo(1L);
-
-        credentialStore.changePassword(subjectId, "OldPassword123!".toCharArray(), "NewPassword456!".toCharArray());
-
-        // Token version bumped
-        assertThat(credentialStore.getTokenVersion(subjectId)).isEqualTo(2L);
-
-        // SessionStore received revocation call
-        assertThat(sessionStore.revokedSubjects()).containsExactly(subjectId);
-
-        // Old password no longer matches
-        CredentialVerificationResult oldResult = credentialStore.verifyCredential(subjectId, "OldPassword123!".toCharArray());
-        assertThat(oldResult.isInvalid()).isTrue();
-
-        // New password matches
-        CredentialVerificationResult newResult = credentialStore.verifyCredential(subjectId, "NewPassword456!".toCharArray());
-        assertThat(newResult.isSuccess()).isTrue();
-    }
-
-    @Test
-    @DisplayName("changePassword throws InvalidCredentialException on wrong current password")
-    void changePasswordWrongCurrentThrows() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "OldPassword123!".toCharArray());
-
-        assertThatThrownBy(() -> credentialStore.changePassword(
-                subjectId,
-                "WrongCurrentPassword!".toCharArray(),
-                "NewPassword456!".toCharArray()
-        )).isInstanceOf(InvalidCredentialException.class)
-          .hasMessageContaining("Current password does not match");
-
-        // Sessions must not have been revoked
-        assertThat(sessionStore.revokedSubjects()).isEmpty();
-    }
-
-    @Test
-    @DisplayName("changePassword throws SamePasswordException when new password equals current password")
-    void changePasswordSamePasswordThrows() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "SamePassword123!".toCharArray());
-
-        assertThatThrownBy(() -> credentialStore.changePassword(
-                subjectId,
-                "SamePassword123!".toCharArray(),
-                "SamePassword123!".toCharArray()
-        )).isInstanceOf(SamePasswordException.class)
-          .hasMessageContaining("New password cannot be identical");
-    }
-
-    @Test
-    @DisplayName("argument validations on null and empty parameters")
-    void argumentValidations() {
-        UUID subjectId = UUID.randomUUID();
-
-        assertThatThrownBy(() -> credentialStore.setCredential(null, "pass".toCharArray()))
-                .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> credentialStore.setCredential(subjectId, null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> credentialStore.setCredential(subjectId, new char[0]))
-                .isInstanceOf(IllegalArgumentException.class);
-
-        assertThatThrownBy(() -> credentialStore.verifyCredential(null, "pass".toCharArray()))
-                .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> credentialStore.verifyCredential(subjectId, null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> credentialStore.verifyCredential(subjectId, new char[0]))
-                .isInstanceOf(IllegalArgumentException.class);
-
-        assertThatThrownBy(() -> credentialStore.verifyDummy(null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> credentialStore.verifyDummy(new char[0]))
-                .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    @DisplayName("expired lockout resets attempt counter so first wrong attempt does not immediately re-lock")
-    void expiredLockoutResetsCounterOnWrongAttempt() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "correctPassword".toCharArray());
-
-        // Simulate expired lockout: 5 failed attempts with lockedUntil in past
-        Instant pastLockout = Instant.now().minusSeconds(60);
-        repository.recordFailedLogin(subjectId, 5, pastLockout, Instant.now().minusSeconds(100));
-
-        // Wrong password should reset base attempts to 0 and record 1 attempt, NOT re-lock immediately!
-        CredentialVerificationResult result = credentialStore.verifyCredential(subjectId, "wrongPassword".toCharArray());
-        assertThat(result.isInvalid()).isTrue();
-        assertThat(result.isLocked()).isFalse();
-
-        LockoutState state = credentialStore.getLockoutState(subjectId);
-        assertThat(state.failedAttempts()).isEqualTo(1);
-        assertThat(state.isLocked(Instant.now())).isFalse();
-    }
-
-    @Test
-    @DisplayName("changePassword throws AccountLockedException when account is actively locked")
-    void changePasswordWhileLockedThrows() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "OldPassword123!".toCharArray());
-
-        // Lock the account
-        Instant futureLockout = Instant.now().plusSeconds(600);
-        repository.recordFailedLogin(subjectId, 5, futureLockout, Instant.now());
-
-        assertThatThrownBy(() -> credentialStore.changePassword(
-                subjectId,
-                "OldPassword123!".toCharArray(),
-                "NewPassword456!".toCharArray()
-        )).isInstanceOf(AccountLockedException.class)
-          .satisfies(ex -> {
-              AccountLockedException ale = (AccountLockedException) ex;
-              assertThat(ale.lockedUntil()).isEqualTo(futureLockout);
-          });
-    }
-
-    @Test
-    @DisplayName("changePassword with wrong current password tracks failed attempts and locks out at threshold")
-    void changePasswordTracksFailedAttemptsAndLocks() {
-        UUID subjectId = UUID.randomUUID();
-        credentialStore.setCredential(subjectId, "OldPassword123!".toCharArray());
-
-        for (int i = 1; i <= 4; i++) {
-            assertThatThrownBy(() -> credentialStore.changePassword(
-                    subjectId,
-                    "WrongCurrent!".toCharArray(),
-                    "NewPassword456!".toCharArray()
-            )).isInstanceOf(InvalidCredentialException.class);
-
-            assertThat(credentialStore.getLockoutState(subjectId).failedAttempts()).isEqualTo(i);
+            assertThat(repository.findBySubject(subject).orElseThrow().passwordHash()).isEqualTo(before);
+            assertThat(store.authenticate(LOGIN, PASSWORD).isSuccess()).isTrue();
+            assertThat(store.authenticate(LOGIN, "Attacker123!".toCharArray()).isInvalid()).isTrue();
         }
 
-        // 5th failed changePassword attempt triggers AccountLockedException
-        assertThatThrownBy(() -> credentialStore.changePassword(
-                subjectId,
-                "WrongCurrent!".toCharArray(),
-                "NewPassword456!".toCharArray()
-        )).isInstanceOf(AccountLockedException.class);
+        @Test
+        @DisplayName("refuses a login that already has a credential, whatever its case, under a new subject")
+        void refusesExistingLogin() {
+            UUID owner = verifiedAccount(LOGIN, PASSWORD);
+            UUID intruder = UUID.randomUUID();
 
-        assertThat(credentialStore.getLockoutState(subjectId).isLocked(Instant.now())).isTrue();
+            char[] attackerPassword = "Attacker123!".toCharArray();
+            assertThatThrownBy(() -> store.createCredential(intruder, "USER@exeris.eu", attackerPassword))
+                    .isInstanceOf(CredentialAlreadyExistsException.class)
+                    .hasMessageNotContaining(LOGIN);
+
+            assertThat(repository.findBySubject(intruder)).isEmpty();
+            assertThat(store.authenticate(LOGIN, PASSWORD).subjectId()).isEqualTo(owner);
+        }
+
+        @Test
+        @DisplayName("rejects malformed arguments before anything is written")
+        void rejectsMalformedArguments() {
+            UUID subject = UUID.randomUUID();
+            assertThatThrownBy(() -> store.createCredential(null, LOGIN, PASSWORD)).isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> store.createCredential(subject, " ", PASSWORD)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.createCredential(subject, "no-at-sign", PASSWORD)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.createCredential(subject, "a@b@c", PASSWORD)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.createCredential(subject, "a b@c", PASSWORD)).isInstanceOf(IllegalArgumentException.class);
+            String overlong = "x".repeat(320) + "@c";
+            assertThatThrownBy(() -> store.createCredential(subject, overlong, PASSWORD)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.createCredential(subject, LOGIN, new char[0])).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.createCredential(subject, LOGIN, null)).isInstanceOf(IllegalArgumentException.class);
+            assertThat(repository.findBySubject(subject)).isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("authenticate")
+    class Authenticate {
+
+        @Test
+        @DisplayName("a verified account with the right password succeeds and carries its subject")
+        void verifiedSucceeds() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+
+            CredentialVerificationResult result = store.authenticate("USER@exeris.eu", PASSWORD);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.subjectId()).isEqualTo(subject);
+        }
+
+        @Test
+        @DisplayName("an unverified account is UNVERIFIED with the right password and INVALID with a wrong one")
+        void unverifiedGate() {
+            UUID subject = UUID.randomUUID();
+            store.createCredential(subject, LOGIN, PASSWORD);
+
+            CredentialVerificationResult right = store.authenticate(LOGIN, PASSWORD);
+            CredentialVerificationResult wrong = store.authenticate(LOGIN, WRONG);
+
+            assertThat(right.isUnverified()).isTrue();
+            assertThat(right.subjectId()).isEqualTo(subject);
+            assertThat(wrong.isInvalid()).isTrue();
+            assertThat(wrong.subjectId()).isNull();
+        }
+
+        @Test
+        @DisplayName("an unknown login is INVALID, indistinguishable from a wrong password, and runs one derivation")
+        void unknownLoginBurnsDerivation() {
+            verifiedAccount(LOGIN, PASSWORD);
+            int before = encoder.matchCount();
+
+            CredentialVerificationResult unknown = store.authenticate("nobody@exeris.eu", PASSWORD);
+
+            assertThat(unknown).isEqualTo(CredentialVerificationResult.invalid());
+            assertThat(store.authenticate(LOGIN, WRONG)).isEqualTo(unknown);
+            assertThat(encoder.matchCount() - before).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("maxAttempts failures lock the account; while locked even the right password is LOCKED")
+        void lockout() {
+            verifiedAccount(LOGIN, PASSWORD);
+            for (int i = 1; i < policy.maxAttempts(); i++) {
+                assertThat(store.authenticate(LOGIN, WRONG).isInvalid()).isTrue();
+            }
+
+            CredentialVerificationResult fifth = store.authenticate(LOGIN, WRONG);
+            assertThat(fifth.isLocked()).isTrue();
+            assertThat(fifth.lockedUntil()).isEqualTo(clock.instant().plus(policy.lockoutDuration()));
+
+            int before = encoder.matchCount();
+            CredentialVerificationResult whileLocked = store.authenticate(LOGIN, PASSWORD);
+            assertThat(whileLocked.isLocked()).isTrue();
+            assertThat(encoder.matchCount() - before).as("a locked check still costs one derivation").isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("after the lockout ends the right password succeeds, and a wrong one counts from one")
+        void lockoutExpires() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            for (int i = 0; i < policy.maxAttempts(); i++) {
+                store.authenticate(LOGIN, WRONG);
+            }
+            clock.advance(policy.lockoutDuration());
+
+            assertThat(store.authenticate(LOGIN, WRONG).isInvalid()).isTrue();
+            assertThat(store.getLockoutState(subject).failedAttempts()).isEqualTo(1);
+            assertThat(store.getLockoutState(subject).isLocked(clock.instant())).isFalse();
+            assertThat(store.authenticate(LOGIN, PASSWORD).isSuccess()).isTrue();
+        }
+
+        @Test
+        @DisplayName("failures older than the window do not count towards a lockout")
+        void failureWindow() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            for (int i = 1; i < policy.maxAttempts(); i++) {
+                store.authenticate(LOGIN, WRONG);
+            }
+            clock.advance(policy.failureWindow().plusSeconds(1));
+
+            assertThat(store.authenticate(LOGIN, WRONG).isInvalid()).isTrue();
+            assertThat(store.getLockoutState(subject).failedAttempts()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a success clears the failure count")
+        void successClearsFailures() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            store.authenticate(LOGIN, WRONG);
+            store.authenticate(LOGIN, WRONG);
+
+            assertThat(store.authenticate(LOGIN, PASSWORD).isSuccess()).isTrue();
+            assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
+        }
+
+        @Test
+        @DisplayName("concurrent guesses never get more than maxAttempts password checks in a window")
+        void concurrentGuessesAreBounded() throws Exception {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            int threads = 24;
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<CredentialVerificationResult>> results = new ArrayList<>();
+            try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+                for (int i = 0; i < threads; i++) {
+                    results.add(pool.submit(() -> {
+                        start.await();
+                        return store.authenticate(LOGIN, WRONG);
+                    }));
+                }
+                start.countDown();
+                for (Future<CredentialVerificationResult> result : results) {
+                    assertThat(result.get().isSuccess()).isFalse();
+                }
+            }
+
+            assertThat(store.getLockoutState(subject).failedAttempts()).isEqualTo(policy.maxAttempts());
+            assertThat(store.getLockoutState(subject).isLocked(clock.instant())).isTrue();
+        }
+
+        @Test
+        @DisplayName("a legacy hash is re-encoded on a successful check, keeping the token version")
+        void rehashOnSuccess() {
+            UUID subject = UUID.randomUUID();
+            assertThat(repository.insertCredential(subject, LOGIN, CountingPasswordEncoder.LEGACY_HASH, clock.instant())).isTrue();
+            markVerified(subject);
+
+            assertThat(store.authenticate(LOGIN, CountingPasswordEncoder.LEGACY_PASSWORD.toCharArray()).isSuccess()).isTrue();
+
+            CredentialRecord credential = repository.findBySubject(subject).orElseThrow();
+            assertThat(credential.passwordHash()).startsWith("$argon2id$");
+            assertThat(credential.tokenVersion()).isEqualTo(1L);
+            assertThat(store.authenticate(LOGIN, CountingPasswordEncoder.LEGACY_PASSWORD.toCharArray()).isSuccess()).isTrue();
+        }
+
+        @Test
+        @DisplayName("verifyCredential applies the same gate and lockout to a subject")
+        void verifyCredentialBySubject() {
+            UUID unverified = UUID.randomUUID();
+            store.createCredential(unverified, "new@exeris.eu", PASSWORD);
+            UUID verified = verifiedAccount(LOGIN, PASSWORD);
+
+            assertThat(store.verifyCredential(unverified, PASSWORD).isUnverified()).isTrue();
+            assertThat(store.verifyCredential(verified, PASSWORD).isSuccess()).isTrue();
+            assertThat(store.verifyCredential(UUID.randomUUID(), PASSWORD).isInvalid()).isTrue();
+            for (int i = 0; i < policy.maxAttempts(); i++) {
+                store.verifyCredential(verified, WRONG);
+            }
+            assertThat(store.verifyCredential(verified, PASSWORD).isLocked()).isTrue();
+        }
+
+        @Test
+        @DisplayName("clearLockout unlocks and resets the count")
+        void clearLockout() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            for (int i = 0; i < policy.maxAttempts(); i++) {
+                store.authenticate(LOGIN, WRONG);
+            }
+
+            store.clearLockout(subject);
+
+            assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
+            assertThat(store.authenticate(LOGIN, PASSWORD).isSuccess()).isTrue();
+        }
+    }
+
+    @Nested
+    @DisplayName("changePassword")
+    class Change {
+
+        @Test
+        @DisplayName("needs the current password; bumps the token version, revokes sessions and voids reset tokens")
+        void succeeds() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            Instant now = clock.instant();
+            repository.issueResetToken(UUID.randomUUID(), subject, "a".repeat(64), now.plusSeconds(900), now, now.minusSeconds(60));
+            char[] next = "NextPassword456!".toCharArray();
+
+            store.changePassword(subject, PASSWORD, next);
+
+            assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+            assertThat(sessionStore.revokedSubjects()).containsExactly(subject);
+            assertThat(repository.resetTokens()).allSatisfy(t -> assertThat(t.consumedAt()).isNotNull());
+            assertThat(store.authenticate(LOGIN, PASSWORD).isInvalid()).isTrue();
+            assertThat(store.authenticate(LOGIN, next).isSuccess()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a wrong current password is refused, counted, and locks at the threshold")
+        void wrongCurrentCountsAndLocks() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            char[] next = "NextPassword456!".toCharArray();
+            for (int i = 1; i < policy.maxAttempts(); i++) {
+                assertThatThrownBy(() -> store.changePassword(subject, WRONG, next))
+                        .isInstanceOf(InvalidCredentialException.class);
+            }
+            assertThatThrownBy(() -> store.changePassword(subject, WRONG, next))
+                    .isInstanceOf(AccountLockedException.class);
+            assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, next))
+                    .isInstanceOf(AccountLockedException.class);
+            assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+            assertThat(sessionStore.revokedSubjects()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the same password is refused and nothing changes")
+        void samePassword() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+
+            char[] samePassword = PASSWORD.clone();
+            assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, samePassword))
+                    .isInstanceOf(SamePasswordException.class);
+            assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("a subject without a credential is refused as a wrong password")
+        void unknownSubject() {
+            UUID unknown = UUID.randomUUID();
+            assertThatThrownBy(() -> store.changePassword(unknown, PASSWORD, WRONG))
+                    .isInstanceOf(InvalidCredentialException.class);
+        }
+
+        @Test
+        @DisplayName("rejects empty arguments")
+        void rejectsEmpty() {
+            UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            assertThatThrownBy(() -> store.changePassword(null, PASSWORD, WRONG)).isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> store.changePassword(subject, new char[0], WRONG)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, null)).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
+    @DisplayName("reads for a subject without a credential answer the defaults")
+    void defaultsForUnknownSubject() {
+        UUID subject = UUID.randomUUID();
+        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(store.isVerified(subject)).isFalse();
+        assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
     }
 }

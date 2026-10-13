@@ -2,36 +2,37 @@ package eu.exeris.caps.credentialstore.api;
 
 import eu.exeris.caps.credentialstore.api.exception.InvalidTokenException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
-import eu.exeris.caps.credentialstore.api.exception.TokenCooldownException;
-
-import java.util.UUID;
 
 /**
- * Public service interface for credential recovery (password reset flow).
+ * Password reset through single-use, expiring tokens that are stored as hashes only.
  *
  * @since 0.1.0
  */
 public interface CredentialRecovery {
 
     /**
-     * Requests a password reset token subject to anti-flooding cooldown (60 seconds)
-     * and dispatches a notification with the raw token.
+     * Issues a reset token and sends it to the account's own login identifier, invalidating any reset token
+     * issued before it.
      *
-     * @param subjectId identity subject identifier
-     * @param recipientEmail recipient email address
-     * @throws TokenCooldownException if an active reset token was issued less than 60 seconds ago
-     * @throws IllegalArgumentException if {@code subjectId} or {@code recipientEmail} is null or blank
+     * <p>Returns normally, without issuing anything, when the login is unknown or was sent a reset token
+     * within the cooldown of the {@code TokenPolicy}, so the caller answers every request alike.
+     *
+     * @param loginIdentifier login identifier of the account
+     * @throws IllegalArgumentException if {@code loginIdentifier} is null, blank or not an address
      */
-    void requestReset(UUID subjectId, String recipientEmail);
+    void requestReset(String loginIdentifier);
 
     /**
-     * Consumes a single-use reset token, updates the subject password, bumps token version,
-     * resets lockout, and cascades revocation of all active sessions.
+     * Consumes a reset token and sets the new password, in one transaction that also increments the token
+     * version, clears the lockout, invalidates every other reset token of the subject and marks the login
+     * identifier verified, since the token reached it. Every session of the subject is then revoked.
      *
-     * @param rawToken raw reset token presented by the user
-     * @param newPassword new plaintext password (caller should wipe after invocation)
-     * @throws InvalidTokenException if token is missing, expired, or already consumed
-     * @throws SamePasswordException if new password is identical to the currently set password
+     * @param rawToken    token as delivered
+     * @param newPassword new password
+     * @throws InvalidTokenException    if the token is unknown, expired, superseded or already consumed; the
+     *                                  four are not distinguished, and a failed call leaves the token as it
+     *                                  was
+     * @throws SamePasswordException    if the new password equals the current one; the token stays usable
      * @throws IllegalArgumentException if {@code rawToken} is blank or {@code newPassword} is empty
      */
     void consumeReset(String rawToken, char[] newPassword);
