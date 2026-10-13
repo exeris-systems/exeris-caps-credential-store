@@ -112,7 +112,8 @@ class DefaultAccountVerificationTest {
         verification.issueVerification(LOGIN);
         clock.advance(tokens.verificationValidity());
 
-        assertThatThrownBy(() -> verification.verifyAccount(issued())).isInstanceOf(InvalidTokenException.class);
+        String token = issued();
+        assertThatThrownBy(() -> verification.verifyAccount(token)).isInstanceOf(InvalidTokenException.class);
         assertThat(store.isVerified(subject)).isFalse();
     }
 

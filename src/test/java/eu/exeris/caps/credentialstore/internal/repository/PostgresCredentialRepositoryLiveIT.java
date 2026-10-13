@@ -111,10 +111,6 @@ class PostgresCredentialRepositoryLiveIT {
         return "user-" + UUID.randomUUID() + "@exeris.eu";
     }
 
-    private static String hash(char c) {
-        return String.valueOf(c).repeat(64);
-    }
-
     private static String randomHash() {
         return (UUID.randomUUID().toString() + UUID.randomUUID()).replace("-", "");
     }
@@ -130,12 +126,12 @@ class PostgresCredentialRepositoryLiveIT {
         assertThat(repository.insertCredential(subject, login(), "$argon2id$intruder", now)).isFalse();
         assertThat(repository.insertCredential(UUID.randomUUID(), login, "$argon2id$intruder", now)).isFalse();
 
-        CredentialRecord record = repository.findByLoginIdentifier(login).orElseThrow();
-        assertThat(record.subjectId()).isEqualTo(subject);
-        assertThat(record.passwordHash()).isEqualTo("$argon2id$original");
-        assertThat(record.emailVerified()).isFalse();
-        assertThat(record.tokenVersion()).isEqualTo(1L);
-        assertThat(repository.findBySubject(subject)).contains(record);
+        CredentialRecord credential = repository.findByLoginIdentifier(login).orElseThrow();
+        assertThat(credential.subjectId()).isEqualTo(subject);
+        assertThat(credential.passwordHash()).isEqualTo("$argon2id$original");
+        assertThat(credential.emailVerified()).isFalse();
+        assertThat(credential.tokenVersion()).isEqualTo(1L);
+        assertThat(repository.findBySubject(subject)).contains(credential);
     }
 
     @Test
@@ -263,11 +259,11 @@ class PostgresCredentialRepositoryLiveIT {
         List<OptionalLong> versions = concurrently(8, () -> repository.consumeResetToken(token, "$argon2id$new", later));
         assertThat(versions.stream().filter(OptionalLong::isPresent).toList()).containsExactly(OptionalLong.of(2L));
 
-        CredentialRecord record = repository.findBySubject(subject).orElseThrow();
-        assertThat(record.passwordHash()).isEqualTo("$argon2id$new");
-        assertThat(record.tokenVersion()).isEqualTo(2L);
-        assertThat(record.failedLoginAttempts()).isZero();
-        assertThat(record.emailVerified()).isTrue();
+        CredentialRecord credential = repository.findBySubject(subject).orElseThrow();
+        assertThat(credential.passwordHash()).isEqualTo("$argon2id$new");
+        assertThat(credential.tokenVersion()).isEqualTo(2L);
+        assertThat(credential.failedLoginAttempts()).isZero();
+        assertThat(credential.emailVerified()).isTrue();
         assertThat(repository.findResetToken(token).orElseThrow().consumedAt()).isEqualTo(later);
     }
 
@@ -284,7 +280,10 @@ class PostgresCredentialRepositoryLiveIT {
         char[] pw = "SecretPassword123!".toCharArray();
 
         store.createCredential(subject, login, pw);
-        assertThatThrownBy(() -> store.createCredential(UUID.randomUUID(), login.toUpperCase(java.util.Locale.ROOT), "Takeover123!".toCharArray()))
+        UUID intruder = UUID.randomUUID();
+        String upperCased = login.toUpperCase(java.util.Locale.ROOT);
+        char[] takeoverPassword = "Takeover123!".toCharArray();
+        assertThatThrownBy(() -> store.createCredential(intruder, upperCased, takeoverPassword))
                 .isInstanceOf(CredentialAlreadyExistsException.class);
         assertThat(store.authenticate(login, pw).isUnverified()).isTrue();
 

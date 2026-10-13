@@ -47,12 +47,13 @@ class PolicyConfigTest {
     @Test
     @DisplayName("an out-of-range value is refused, not corrected")
     void refusesOutOfRange() {
-        assertThatThrownBy(() -> LockoutPolicy.fromConfig(new MapConfig(Map.of(
-                "caps.credential-store.lockout.max-attempts", "0")))).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> LockoutPolicy.fromConfig(new MapConfig(Map.of(
-                "caps.credential-store.lockout.duration-seconds", "-1")))).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> TokenPolicy.fromConfig(new MapConfig(Map.of(
-                "caps.credential-store.token.reset-validity-seconds", "0")))).isInstanceOf(IllegalArgumentException.class);
+        MapConfig noAttempts = new MapConfig(Map.of("caps.credential-store.lockout.max-attempts", "0"));
+        MapConfig negativeLockout = new MapConfig(Map.of("caps.credential-store.lockout.duration-seconds", "-1"));
+        MapConfig zeroResetValidity = new MapConfig(Map.of("caps.credential-store.token.reset-validity-seconds", "0"));
+
+        assertThatThrownBy(() -> LockoutPolicy.fromConfig(noAttempts)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> LockoutPolicy.fromConfig(negativeLockout)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> TokenPolicy.fromConfig(zeroResetValidity)).isInstanceOf(IllegalArgumentException.class);
     }
 
     /** String-valued configuration, the shape of a properties-backed provider. */

@@ -67,16 +67,19 @@ class CredentialStoreModuleTest {
     @DisplayName("the public wiring constructor refuses a missing executor, encoder, dispatcher or policy")
     void publicWiringRefusesMissingDependencies() {
         InMemoryNotificationDispatcher dispatcher = new InMemoryNotificationDispatcher();
-        assertThatThrownBy(() -> new CredentialStoreModule(null, encoder(), dispatcher, null, null,
-                LockoutPolicy.defaults(), TokenPolicy.defaults()))
+        KernelPasswordEncoder encoder = encoder();
+        LockoutPolicy lockout = LockoutPolicy.defaults();
+        TokenPolicy tokens = TokenPolicy.defaults();
+
+        assertThatThrownBy(() -> new CredentialStoreModule(null, encoder, dispatcher, null, null, lockout, tokens))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("tx");
-        assertThatThrownBy(() -> wired(null, dispatcher, LockoutPolicy.defaults(), TokenPolicy.defaults()))
+        assertThatThrownBy(() -> wired(null, dispatcher, lockout, tokens))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("passwordEncoder");
-        assertThatThrownBy(() -> wired(encoder(), null, LockoutPolicy.defaults(), TokenPolicy.defaults()))
+        assertThatThrownBy(() -> wired(encoder, null, lockout, tokens))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("notificationDispatcher");
-        assertThatThrownBy(() -> wired(encoder(), dispatcher, null, TokenPolicy.defaults()))
+        assertThatThrownBy(() -> wired(encoder, dispatcher, null, tokens))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("lockoutPolicy");
-        assertThatThrownBy(() -> wired(encoder(), dispatcher, LockoutPolicy.defaults(), null))
+        assertThatThrownBy(() -> wired(encoder, dispatcher, lockout, null))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("tokenPolicy");
     }
 
@@ -107,7 +110,9 @@ class CredentialStoreModuleTest {
 
         store.createCredential(subjectId, "user@exeris.eu", initialPassword);
         assertThat(store.authenticate("user@exeris.eu", initialPassword).isUnverified()).isTrue();
-        assertThatThrownBy(() -> store.createCredential(UUID.randomUUID(), "user@exeris.eu", "Takeover1!".toCharArray()))
+        UUID intruder = UUID.randomUUID();
+        char[] takeoverPassword = "Takeover1!".toCharArray();
+        assertThatThrownBy(() -> store.createCredential(intruder, "user@exeris.eu", takeoverPassword))
                 .isInstanceOf(CredentialAlreadyExistsException.class);
 
         verification.issueVerification("user@exeris.eu");

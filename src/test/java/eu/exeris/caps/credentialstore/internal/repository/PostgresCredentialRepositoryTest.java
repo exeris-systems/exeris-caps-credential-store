@@ -64,8 +64,8 @@ class PostgresCredentialRepositoryTest {
     @DisplayName("the lockout reservation is one conditional update that returns the row it reserved")
     void reservationIsAtomic() {
         String sql = PostgresCredentialRepository.RESERVE_ATTEMPT;
-        assertThat(sql).startsWith("UPDATE credential_records");
-        assertThat(sql).contains("c.failed_login_attempts < p.max_attempts");
-        assertThat(sql).contains("RETURNING c.subject_id");
+        assertThat(sql).startsWith("UPDATE credential_records")
+                .contains("c.failed_login_attempts < p.max_attempts")
+                .contains("RETURNING c.subject_id");
     }
 }

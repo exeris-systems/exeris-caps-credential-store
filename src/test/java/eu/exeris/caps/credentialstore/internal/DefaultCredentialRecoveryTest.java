@@ -105,8 +105,9 @@ class DefaultCredentialRecoveryTest {
         recovery.requestReset(LOGIN);
         String token = issued();
         recovery.consumeReset(token, NEXT);
+        char[] another = "Another789!".toCharArray();
 
-        assertThatThrownBy(() -> recovery.consumeReset(token, "Another789!".toCharArray()))
+        assertThatThrownBy(() -> recovery.consumeReset(token, another))
                 .isInstanceOf(InvalidTokenException.class);
         assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
     }
@@ -117,7 +118,8 @@ class DefaultCredentialRecoveryTest {
         recovery.requestReset(LOGIN);
         clock.advance(tokens.resetValidity());
 
-        assertThatThrownBy(() -> recovery.consumeReset(issued(), NEXT)).isInstanceOf(InvalidTokenException.class);
+        String token = issued();
+        assertThatThrownBy(() -> recovery.consumeReset(token, NEXT)).isInstanceOf(InvalidTokenException.class);
         assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
     }
 
@@ -144,8 +146,10 @@ class DefaultCredentialRecoveryTest {
         recovery.requestReset(LOGIN);
 
         store.changePassword(subject, PASSWORD, NEXT);
+        String token = issued();
+        char[] another = "Another789!".toCharArray();
 
-        assertThatThrownBy(() -> recovery.consumeReset(issued(), "Another789!".toCharArray()))
+        assertThatThrownBy(() -> recovery.consumeReset(token, another))
                 .isInstanceOf(InvalidTokenException.class);
     }
 
@@ -155,7 +159,8 @@ class DefaultCredentialRecoveryTest {
         recovery.requestReset(LOGIN);
         String token = issued();
 
-        assertThatThrownBy(() -> recovery.consumeReset(token, PASSWORD.clone())).isInstanceOf(SamePasswordException.class);
+        char[] samePassword = PASSWORD.clone();
+        assertThatThrownBy(() -> recovery.consumeReset(token, samePassword)).isInstanceOf(SamePasswordException.class);
         recovery.consumeReset(token, NEXT);
         assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
     }

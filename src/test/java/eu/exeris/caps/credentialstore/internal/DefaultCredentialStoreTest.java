@@ -80,10 +80,10 @@ class DefaultCredentialStoreTest {
 
             store.createCredential(subject, "  User@Exeris.EU ", PASSWORD);
 
-            CredentialRecord record = repository.findBySubject(subject).orElseThrow();
-            assertThat(record.loginIdentifier()).isEqualTo(LOGIN);
-            assertThat(record.emailVerified()).isFalse();
-            assertThat(record.passwordHash()).startsWith("$argon2id$");
+            CredentialRecord credential = repository.findBySubject(subject).orElseThrow();
+            assertThat(credential.loginIdentifier()).isEqualTo(LOGIN);
+            assertThat(credential.emailVerified()).isFalse();
+            assertThat(credential.passwordHash()).startsWith("$argon2id$");
             assertThat(store.isVerified(subject)).isFalse();
         }
 
@@ -93,7 +93,8 @@ class DefaultCredentialStoreTest {
             UUID subject = verifiedAccount(LOGIN, PASSWORD);
             String before = repository.findBySubject(subject).orElseThrow().passwordHash();
 
-            assertThatThrownBy(() -> store.createCredential(subject, "other@exeris.eu", "Attacker123!".toCharArray()))
+            char[] attackerPassword = "Attacker123!".toCharArray();
+            assertThatThrownBy(() -> store.createCredential(subject, "other@exeris.eu", attackerPassword))
                     .isInstanceOf(CredentialAlreadyExistsException.class)
                     .hasMessageNotContaining(subject.toString())
                     .hasMessageNotContaining("other@exeris.eu");
@@ -109,7 +110,8 @@ class DefaultCredentialStoreTest {
             UUID owner = verifiedAccount(LOGIN, PASSWORD);
             UUID intruder = UUID.randomUUID();
 
-            assertThatThrownBy(() -> store.createCredential(intruder, "USER@exeris.eu", "Attacker123!".toCharArray()))
+            char[] attackerPassword = "Attacker123!".toCharArray();
+            assertThatThrownBy(() -> store.createCredential(intruder, "USER@exeris.eu", attackerPassword))
                     .isInstanceOf(CredentialAlreadyExistsException.class)
                     .hasMessageNotContaining(LOGIN);
 
@@ -126,7 +128,8 @@ class DefaultCredentialStoreTest {
             assertThatThrownBy(() -> store.createCredential(subject, "no-at-sign", PASSWORD)).isInstanceOf(IllegalArgumentException.class);
             assertThatThrownBy(() -> store.createCredential(subject, "a@b@c", PASSWORD)).isInstanceOf(IllegalArgumentException.class);
             assertThatThrownBy(() -> store.createCredential(subject, "a b@c", PASSWORD)).isInstanceOf(IllegalArgumentException.class);
-            assertThatThrownBy(() -> store.createCredential(subject, "x".repeat(320) + "@c", PASSWORD)).isInstanceOf(IllegalArgumentException.class);
+            String overlong = "x".repeat(320) + "@c";
+            assertThatThrownBy(() -> store.createCredential(subject, overlong, PASSWORD)).isInstanceOf(IllegalArgumentException.class);
             assertThatThrownBy(() -> store.createCredential(subject, LOGIN, new char[0])).isInstanceOf(IllegalArgumentException.class);
             assertThatThrownBy(() -> store.createCredential(subject, LOGIN, null)).isInstanceOf(IllegalArgumentException.class);
             assertThat(repository.findBySubject(subject)).isEmpty();
@@ -266,9 +269,9 @@ class DefaultCredentialStoreTest {
 
             assertThat(store.authenticate(LOGIN, CountingPasswordEncoder.LEGACY_PASSWORD.toCharArray()).isSuccess()).isTrue();
 
-            CredentialRecord record = repository.findBySubject(subject).orElseThrow();
-            assertThat(record.passwordHash()).startsWith("$argon2id$");
-            assertThat(record.tokenVersion()).isEqualTo(1L);
+            CredentialRecord credential = repository.findBySubject(subject).orElseThrow();
+            assertThat(credential.passwordHash()).startsWith("$argon2id$");
+            assertThat(credential.tokenVersion()).isEqualTo(1L);
             assertThat(store.authenticate(LOGIN, CountingPasswordEncoder.LEGACY_PASSWORD.toCharArray()).isSuccess()).isTrue();
         }
 
@@ -328,13 +331,14 @@ class DefaultCredentialStoreTest {
         @DisplayName("a wrong current password is refused, counted, and locks at the threshold")
         void wrongCurrentCountsAndLocks() {
             UUID subject = verifiedAccount(LOGIN, PASSWORD);
+            char[] next = "NextPassword456!".toCharArray();
             for (int i = 1; i < policy.maxAttempts(); i++) {
-                assertThatThrownBy(() -> store.changePassword(subject, WRONG, "NextPassword456!".toCharArray()))
+                assertThatThrownBy(() -> store.changePassword(subject, WRONG, next))
                         .isInstanceOf(InvalidCredentialException.class);
             }
-            assertThatThrownBy(() -> store.changePassword(subject, WRONG, "NextPassword456!".toCharArray()))
+            assertThatThrownBy(() -> store.changePassword(subject, WRONG, next))
                     .isInstanceOf(AccountLockedException.class);
-            assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, "NextPassword456!".toCharArray()))
+            assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, next))
                     .isInstanceOf(AccountLockedException.class);
             assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
             assertThat(sessionStore.revokedSubjects()).isEmpty();
@@ -345,7 +349,8 @@ class DefaultCredentialStoreTest {
         void samePassword() {
             UUID subject = verifiedAccount(LOGIN, PASSWORD);
 
-            assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, PASSWORD.clone()))
+            char[] samePassword = PASSWORD.clone();
+            assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, samePassword))
                     .isInstanceOf(SamePasswordException.class);
             assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
         }
@@ -353,7 +358,8 @@ class DefaultCredentialStoreTest {
         @Test
         @DisplayName("a subject without a credential is refused as a wrong password")
         void unknownSubject() {
-            assertThatThrownBy(() -> store.changePassword(UUID.randomUUID(), PASSWORD, WRONG))
+            UUID unknown = UUID.randomUUID();
+            assertThatThrownBy(() -> store.changePassword(unknown, PASSWORD, WRONG))
                     .isInstanceOf(InvalidCredentialException.class);
         }
 
