@@ -21,7 +21,7 @@ public final class LoginIdentifiers {
      * @param raw identifier as presented
      * @return the normal form
      * @throws IllegalArgumentException if {@code raw} is null or blank, longer than {@link #MAX_LENGTH},
-     *                                  contains whitespace or a control character, or is not one {@code @}
+     *                                  contains whitespace, a control character or an invisible format character (zero-width, bidi), or is not one {@code @}
      *                                  between a non-empty local part and a non-empty domain
      */
     public static String normalize(String raw) {
@@ -32,13 +32,22 @@ public final class LoginIdentifiers {
         if (normalized.length() > MAX_LENGTH) {
             throw new IllegalArgumentException("loginIdentifier must not exceed " + MAX_LENGTH + " characters");
         }
-        if (normalized.codePoints().anyMatch(c -> Character.isWhitespace(c) || Character.isISOControl(c))) {
-            throw new IllegalArgumentException("loginIdentifier must not contain whitespace or control characters");
+        if (normalized.codePoints().anyMatch(LoginIdentifiers::isInvisibleOrSpace)) {
+            throw new IllegalArgumentException(
+                    "loginIdentifier must not contain whitespace, control or invisible format characters");
         }
         int at = normalized.indexOf('@');
         if (at <= 0 || at != normalized.lastIndexOf('@') || at == normalized.length() - 1) {
             throw new IllegalArgumentException("loginIdentifier must be an address of the form local@domain");
         }
         return normalized;
+    }
+
+    private static boolean isInvisibleOrSpace(int c) {
+        return switch (Character.getType(c)) {
+            case Character.FORMAT, Character.SPACE_SEPARATOR, Character.LINE_SEPARATOR,
+                 Character.PARAGRAPH_SEPARATOR, Character.CONTROL -> true;
+            default -> Character.isWhitespace(c) || Character.isISOControl(c);
+        };
     }
 }
