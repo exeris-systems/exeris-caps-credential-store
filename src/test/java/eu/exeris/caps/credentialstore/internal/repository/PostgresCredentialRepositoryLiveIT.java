@@ -3,6 +3,7 @@ package eu.exeris.caps.credentialstore.internal.repository;
 import eu.exeris.caps.credentialstore.CredentialStoreModule;
 import eu.exeris.caps.credentialstore.api.exception.CredentialAlreadyExistsException;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
 import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.CountingPasswordEncoder;
@@ -20,6 +21,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.testcontainers.DockerClientFactory;
+import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -51,10 +54,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@link PostgresCredentialRepository} against a real PostgreSQL, with the schema created from the
  * capability's own migration in a throw-away schema.
  *
- * <p>The connection comes from the environment or system properties, never from a default:
- * {@code EXERIS_TEST_PG_URL} / {@code exeris.test.pg.url} (a JDBC URL), {@code EXERIS_TEST_PG_USER} /
- * {@code exeris.test.pg.user} and {@code EXERIS_TEST_PG_PASSWORD} / {@code exeris.test.pg.password}. Without
- * all three the class is skipped.
+ * <p>The database comes from, in order:
+ * <ol>
+ *   <li>the environment or system properties {@code EXERIS_TEST_PG_URL} / {@code exeris.test.pg.url} (a JDBC
+ *       URL), {@code EXERIS_TEST_PG_USER} / {@code exeris.test.pg.user} and {@code EXERIS_TEST_PG_PASSWORD} /
+ *       {@code exeris.test.pg.password}, all three;</li>
+ *   <li>a throw-away {@code postgres:16} container through Testcontainers, when Docker is available.</li>
+ * </ol>
+ * With neither, the class is skipped, unless {@code EXERIS_REQUIRE_LIVE_PG} / {@code exeris.test.pg.required}
+ * is {@code true}, in which case it fails: a pipeline sets that so the lockout and token statements can never
+ * go unexecuted without the build turning red.
  */
 @DisplayName("PostgresCredentialRepository on a live PostgreSQL")
 class PostgresCredentialRepositoryLiveIT {
@@ -68,14 +77,17 @@ class PostgresCredentialRepositoryLiveIT {
     private static PostgresCredentialRepository repository;
     private static TransactionalExecutor tx;
 
+    private static PostgreSQLContainer<?> container;
+
     @BeforeAll
     static void setUpDatabase() throws Exception {
         url = setting("EXERIS_TEST_PG_URL", "exeris.test.pg.url");
         user = setting("EXERIS_TEST_PG_USER", "exeris.test.pg.user");
         password = setting("EXERIS_TEST_PG_PASSWORD", "exeris.test.pg.password");
-        Assumptions.assumeTrue(url != null && user != null && password != null,
-                "set EXERIS_TEST_PG_URL, EXERIS_TEST_PG_USER and EXERIS_TEST_PG_PASSWORD "
-                        + "(or the exeris.test.pg.* system properties) to run against PostgreSQL");
+        if (url == null || user == null || password == null) {
+            url = user = password = null;
+            startContainer();
+        }
 
         try (Connection conn = DriverManager.getConnection(url, user, password);
              Statement stmt = conn.createStatement()) {
@@ -93,14 +105,42 @@ class PostgresCredentialRepositoryLiveIT {
         repository = new PostgresCredentialRepository(tx);
     }
 
+    private static void startContainer() {
+        boolean required = "true".equalsIgnoreCase(setting("EXERIS_REQUIRE_LIVE_PG", "exeris.test.pg.required"));
+        boolean docker;
+        try {
+            docker = DockerClientFactory.instance().isDockerAvailable();
+        } catch (RuntimeException e) {
+            docker = false;
+        }
+        if (!docker) {
+            if (required) {
+                throw new IllegalStateException("a live PostgreSQL is required (EXERIS_REQUIRE_LIVE_PG) but neither "
+                        + "EXERIS_TEST_PG_URL/USER/PASSWORD nor Docker is available");
+            }
+            Assumptions.abort("no PostgreSQL configured and no Docker: set EXERIS_TEST_PG_URL, EXERIS_TEST_PG_USER "
+                    + "and EXERIS_TEST_PG_PASSWORD, or start Docker");
+        }
+        container = new PostgreSQLContainer<>("postgres:16");
+        container.start();
+        url = container.getJdbcUrl();
+        user = container.getUsername();
+        password = container.getPassword();
+    }
+
     @AfterAll
     static void dropSchema() throws SQLException {
-        if (url == null || user == null || password == null) {
-            return;
-        }
-        try (Connection conn = DriverManager.getConnection(url, user, password);
-             Statement stmt = conn.createStatement()) {
-            stmt.execute("DROP SCHEMA IF EXISTS " + TEST_SCHEMA + " CASCADE");
+        try {
+            if (url != null && user != null && password != null) {
+                try (Connection conn = DriverManager.getConnection(url, user, password);
+                     Statement stmt = conn.createStatement()) {
+                    stmt.execute("DROP SCHEMA IF EXISTS " + TEST_SCHEMA + " CASCADE");
+                }
+            }
+        } finally {
+            if (container != null) {
+                container.stop();
+            }
         }
     }
 
@@ -292,6 +332,50 @@ class PostgresCredentialRepositoryLiveIT {
         assertThat(verification.verifyAccount(dispatcher.dispatchedNotifications().getFirst().rawToken())).isEqualTo(subject);
         assertThat(store.authenticate(login, pw).subjectId()).isEqualTo(subject);
         assertThat(store.authenticate(login, "Takeover123!".toCharArray()).isInvalid()).isTrue();
+    }
+
+    /** Counts comparisons against one stored hash, which is where a lockout budget is spent. */
+    private static final class HashComparisonCounter implements eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder {
+        private final eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder delegate = new CountingPasswordEncoder();
+        private volatile String watched;
+        private final java.util.concurrent.atomic.AtomicInteger comparisons = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public String encode(char[] raw) {
+            return delegate.encode(raw);
+        }
+
+        @Override
+        public boolean matches(char[] raw, String encoded) {
+            if (encoded.equals(watched)) {
+                comparisons.incrementAndGet();
+            }
+            return delegate.matches(raw, encoded);
+        }
+    }
+
+    @Test
+    @DisplayName("sixteen concurrent wrong guesses through the service spend exactly maxAttempts comparisons and lock")
+    void concurrentGuessesThroughTheServiceAreBounded() throws Exception {
+        HashComparisonCounter encoder = new HashComparisonCounter();
+        DefaultCredentialStore store = new DefaultCredentialStore(repository,
+                new PasswordHashing(encoder, new KdfConcurrencyThrottler(16)), POLICY, PasswordPolicy.defaults(),
+                null, null, Clock.systemUTC());
+        UUID subject = UUID.randomUUID();
+        String login = login();
+        store.createCredential(subject, login, "SecretPassword123!".toCharArray());
+        encoder.watched = repository.findBySubject(subject).orElseThrow().passwordHash();
+
+        List<CredentialVerificationResult> results =
+                concurrently(16, () -> store.authenticate(login, "WrongPassword123!".toCharArray()));
+
+        assertThat(encoder.comparisons.get()).isEqualTo(POLICY.maxAttempts());
+        assertThat(results).allSatisfy(r -> assertThat(r.isInvalid() || r.isLocked()).isTrue());
+        assertThat(results.stream().filter(CredentialVerificationResult::isLocked).count()).isGreaterThanOrEqualTo(1);
+        CredentialRecord record = repository.findBySubject(subject).orElseThrow();
+        assertThat(record.failedLoginAttempts()).isEqualTo(POLICY.maxAttempts());
+        assertThat(record.lockedUntil()).isNotNull();
+        assertThat(store.authenticate(login, "SecretPassword123!".toCharArray()).isLocked()).isTrue();
     }
 
     private static <T> List<T> concurrently(int threads, Callable<T> task) throws Exception {
