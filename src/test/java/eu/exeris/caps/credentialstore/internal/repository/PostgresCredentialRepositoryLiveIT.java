@@ -1,5 +1,15 @@
 package eu.exeris.caps.credentialstore.internal.repository;
 
+import eu.exeris.caps.credentialstore.CredentialStoreModule;
+import eu.exeris.caps.credentialstore.api.exception.CredentialAlreadyExistsException;
+import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
+import eu.exeris.caps.credentialstore.internal.CountingPasswordEncoder;
+import eu.exeris.caps.credentialstore.internal.DefaultAccountVerification;
+import eu.exeris.caps.credentialstore.internal.DefaultCredentialStore;
+import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
+import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
+import eu.exeris.caps.credentialstore.spi.InMemoryNotificationDispatcher;
 import eu.exeris.kernel.community.persistence.jdbc.JdbcPersistenceConnection;
 import eu.exeris.kernel.spi.persistence.PersistenceConnection;
 import eu.exeris.kernel.spi.persistence.TransactionIsolation;
@@ -10,222 +20,369 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DisplayName("PostgresCredentialRepository Live PostgreSQL Integration Tests")
+/**
+ * {@link PostgresCredentialRepository} against a real PostgreSQL, with the schema created from the
+ * capability's own migration in a throw-away schema.
+ *
+ * <p>The connection comes from the environment or system properties, never from a default:
+ * {@code EXERIS_TEST_PG_URL} / {@code exeris.test.pg.url} (a JDBC URL), {@code EXERIS_TEST_PG_USER} /
+ * {@code exeris.test.pg.user} and {@code EXERIS_TEST_PG_PASSWORD} / {@code exeris.test.pg.password}. Without
+ * all three the class is skipped.
+ */
+@DisplayName("PostgresCredentialRepository on a live PostgreSQL")
 class PostgresCredentialRepositoryLiveIT {
 
-    private static final String PG_URL = "jdbc:postgresql://localhost:5432/exeris_showroom";
-    private static final String PG_USER = "exeris";
-    private static final String PG_PASS = "exeris_password";
-    private static final String TEST_SCHEMA = "test_cred_store_live";
+    private static final String TEST_SCHEMA = "test_credential_store_live";
+    private static final LockoutPolicy POLICY = new LockoutPolicy(5, Duration.ofMinutes(15), Duration.ofMinutes(15));
 
-    private static Connection jdbcConn;
+    private static String url;
+    private static String user;
+    private static String password;
     private static PostgresCredentialRepository repository;
+    private static TransactionalExecutor tx;
 
     @BeforeAll
-    static void setUpDatabase() {
-        try (Connection initConn = DriverManager.getConnection(PG_URL, PG_USER, PG_PASS);
-             Statement stmt = initConn.createStatement()) {
+    static void setUpDatabase() throws Exception {
+        url = setting("EXERIS_TEST_PG_URL", "exeris.test.pg.url");
+        user = setting("EXERIS_TEST_PG_USER", "exeris.test.pg.user");
+        password = setting("EXERIS_TEST_PG_PASSWORD", "exeris.test.pg.password");
+        Assumptions.assumeTrue(url != null && user != null && password != null,
+                "set EXERIS_TEST_PG_URL, EXERIS_TEST_PG_USER and EXERIS_TEST_PG_PASSWORD "
+                        + "(or the exeris.test.pg.* system properties) to run against PostgreSQL");
+
+        try (Connection conn = DriverManager.getConnection(url, user, password);
+             Statement stmt = conn.createStatement()) {
             stmt.execute("DROP SCHEMA IF EXISTS " + TEST_SCHEMA + " CASCADE");
             stmt.execute("CREATE SCHEMA " + TEST_SCHEMA);
-        } catch (SQLException e) {
-            Assumptions.abort("PostgreSQL not reachable at " + PG_URL + ": " + e.getMessage());
-            return;
         }
-
-        try {
-            jdbcConn = DriverManager.getConnection(PG_URL + "?currentSchema=" + TEST_SCHEMA, PG_USER, PG_PASS);
-            try (Statement stmt = jdbcConn.createStatement()) {
-                // Execute DDL schema
-                try (InputStream is = PostgresCredentialRepositoryLiveIT.class.getResourceAsStream("/schema/credential-store-schema.sql")) {
-                    if (is != null) {
-                        String ddl = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                        String cleanDdl = ddl.replaceAll("(?m)^--.*$", "");
-                        for (String command : cleanDdl.split(";")) {
-                            String trimmed = command.trim();
-                            if (!trimmed.isEmpty()) {
-                                stmt.execute(trimmed);
-                            }
-                        }
-                    }
+        try (Connection conn = open(); Statement stmt = conn.createStatement()) {
+            for (String migration : CredentialStoreModule.MIGRATIONS) {
+                for (String statement : statements(read(migration))) {
+                    stmt.execute(statement);
                 }
             }
-        } catch (Exception e) {
-            Assumptions.abort("Failed to initialize test schema on PostgreSQL: " + e.getMessage());
-            return;
         }
-
-        TransactionalExecutor tx = new TransactionalExecutor() {
-            @Override
-            public void execute(TransactionalWork work) {
-                executeManaged(work);
-            }
-
-            @Override
-            public void executeManaged(TransactionalWork work) {
-                try {
-                    PersistenceConnection conn = new JdbcPersistenceConnection(jdbcConn);
-                    conn.beginTransaction();
-                    work.run(conn);
-                    conn.commit();
-                } catch (Exception e) {
-                    try {
-                        jdbcConn.rollback();
-                    } catch (SQLException ignored) {}
-                    throw new RuntimeException(e);
-                }
-            }
-
-            @Override
-            public void executeManaged(TransactionIsolation isolation, boolean readOnly, TransactionalWork work) {
-                executeManaged(work);
-            }
-
-            @Override
-            public <T> T query(Function<PersistenceConnection, T> query) {
-                try {
-                    PersistenceConnection conn = new JdbcPersistenceConnection(jdbcConn);
-                    return query.apply(conn);
-                } catch (Exception e) {
-                    throw new RuntimeException(e);
-                }
-            }
-        };
-
+        tx = new PerCallExecutor();
         repository = new PostgresCredentialRepository(tx);
     }
 
     @AfterAll
-    static void tearDownDatabase() {
-        if (jdbcConn != null) {
-            try (Statement stmt = jdbcConn.createStatement()) {
-                stmt.execute("DROP SCHEMA IF EXISTS " + TEST_SCHEMA + " CASCADE");
-            } catch (SQLException ignored) {
-            } finally {
-                try {
-                    jdbcConn.close();
-                } catch (SQLException ignored) {}
-            }
+    static void dropSchema() throws SQLException {
+        if (url == null || user == null || password == null) {
+            return;
+        }
+        try (Connection conn = DriverManager.getConnection(url, user, password);
+             Statement stmt = conn.createStatement()) {
+            stmt.execute("DROP SCHEMA IF EXISTS " + TEST_SCHEMA + " CASCADE");
         }
     }
 
+    private static Instant now() {
+        return Instant.now().truncatedTo(ChronoUnit.MICROS);
+    }
+
+    private static String login() {
+        return "user-" + UUID.randomUUID() + "@exeris.eu";
+    }
+
+    private static String hash(char c) {
+        return String.valueOf(c).repeat(64);
+    }
+
+    private static String randomHash() {
+        return (UUID.randomUUID().toString() + UUID.randomUUID()).replace("-", "");
+    }
+
     @Test
-    @DisplayName("credential lifecycle: save, find, recordFailed, unlock, updatePassword, getTokenVersion, emailVerified")
-    void credentialLifecycleLivePostgres() {
-        UUID subjectId = UUID.randomUUID();
-        String passwordHash = "$argon2id$v=19$m=65536,t=3,p=1$c29tZXNhbHQ$c29tZWhhc2g";
-        Instant now = Instant.now();
+    @DisplayName("insert is insert-only for both the subject and the login identifier")
+    void insertOnly() {
+        UUID subject = UUID.randomUUID();
+        String login = login();
+        Instant now = now();
 
-        // 1. Save credential
-        repository.saveCredential(subjectId, passwordHash, now);
+        assertThat(repository.insertCredential(subject, login, "$argon2id$original", now)).isTrue();
+        assertThat(repository.insertCredential(subject, login(), "$argon2id$intruder", now)).isFalse();
+        assertThat(repository.insertCredential(UUID.randomUUID(), login, "$argon2id$intruder", now)).isFalse();
 
-        // 2. Find credential
-        Optional<CredentialRecord> opt = repository.findCredential(subjectId);
-        assertThat(opt).isPresent();
-        CredentialRecord record = opt.get();
-        assertThat(record.subjectId()).isEqualTo(subjectId);
-        assertThat(record.passwordHash()).isEqualTo(passwordHash);
+        CredentialRecord record = repository.findByLoginIdentifier(login).orElseThrow();
+        assertThat(record.subjectId()).isEqualTo(subject);
+        assertThat(record.passwordHash()).isEqualTo("$argon2id$original");
         assertThat(record.emailVerified()).isFalse();
-        assertThat(record.verifiedAt()).isNull();
-        assertThat(record.failedLoginAttempts()).isZero();
-        assertThat(record.lockedUntil()).isNull();
         assertThat(record.tokenVersion()).isEqualTo(1L);
-
-        // 3. Record failed login
-        Instant lockedUntil = now.plusSeconds(900);
-        repository.recordFailedLogin(subjectId, 5, lockedUntil, now);
-        CredentialRecord locked = repository.findCredential(subjectId).orElseThrow();
-        assertThat(locked.failedLoginAttempts()).isEqualTo(5);
-        assertThat(locked.lockedUntil()).isNotNull();
-
-        // 4. Unlock account
-        repository.unlockAccount(subjectId, now);
-        CredentialRecord unlocked = repository.findCredential(subjectId).orElseThrow();
-        assertThat(unlocked.failedLoginAttempts()).isZero();
-        assertThat(unlocked.lockedUntil()).isNull();
-
-        // 5. Update password
-        String newHash = "$argon2id$v=19$m=65536,t=3,p=1$bmV3c2FsdA$bmV3aGFzaA";
-        repository.updatePassword(subjectId, newHash, 2L, now);
-        CredentialRecord updated = repository.findCredential(subjectId).orElseThrow();
-        assertThat(updated.passwordHash()).isEqualTo(newHash);
-        assertThat(updated.tokenVersion()).isEqualTo(2L);
-        assertThat(repository.getTokenVersion(subjectId)).isEqualTo(2L);
-
-        // 6. Verify email
-        assertThat(repository.isEmailVerified(subjectId)).isFalse();
-        repository.setEmailVerified(subjectId, now);
-        assertThat(repository.isEmailVerified(subjectId)).isTrue();
+        assertThat(repository.findBySubject(subject)).contains(record);
     }
 
     @Test
-    @DisplayName("verification token lifecycle and double-spend protection on live Postgres")
-    void verificationTokenLifecycleLivePostgres() {
-        UUID tokenId = UUID.randomUUID();
-        UUID subjectId = UUID.randomUUID();
-        String tokenHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        Instant now = Instant.now();
-        Instant expiresAt = now.plusSeconds(86400);
+    @DisplayName("reservations stop at maxAttempts, lock, and restart at one once the lockout ends")
+    void lockoutLifecycle() {
+        UUID subject = UUID.randomUUID();
+        Instant now = now();
+        repository.insertCredential(subject, login(), "$argon2id$h", now);
 
-        repository.saveVerificationToken(tokenId, subjectId, tokenHash, expiresAt, now);
+        for (int i = 1; i <= POLICY.maxAttempts(); i++) {
+            assertThat(repository.reserveAttempt(subject, POLICY, now)).get()
+                    .extracting(CredentialRecord::failedLoginAttempts).isEqualTo(i);
+        }
+        assertThat(repository.reserveAttempt(subject, POLICY, now)).isEmpty();
 
-        Optional<TokenRecord> found = repository.findVerificationTokenByHash(tokenHash);
-        assertThat(found).isPresent();
-        assertThat(found.get().id()).isEqualTo(tokenId);
-        assertThat(found.get().subjectId()).isEqualTo(subjectId);
-        assertThat(found.get().consumedAt()).isNull();
+        Optional<Instant> locked = repository.lockIfExhausted(subject, POLICY, now);
+        assertThat(locked).contains(now.plus(POLICY.lockoutDuration()));
+        assertThat(repository.lockIfExhausted(subject, POLICY, now)).as("already locked").isEmpty();
+        assertThat(repository.reserveAttempt(subject, POLICY, now.plusSeconds(60))).isEmpty();
 
-        Optional<TokenRecord> latest = repository.findLatestVerificationToken(subjectId);
-        assertThat(latest).isPresent();
-        assertThat(latest.get().id()).isEqualTo(tokenId);
+        Instant after = now.plus(POLICY.lockoutDuration());
+        CredentialRecord restarted = repository.reserveAttempt(subject, POLICY, after).orElseThrow();
+        assertThat(restarted.failedLoginAttempts()).isEqualTo(1);
+        assertThat(restarted.lockedUntil()).isNull();
+        assertThat(restarted.failureWindowStartedAt()).isEqualTo(after);
 
-        // First consume succeeds
-        boolean firstConsume = repository.consumeVerificationToken(tokenId, now);
-        assertThat(firstConsume).isTrue();
-
-        // Double-spend consume fails
-        boolean secondConsume = repository.consumeVerificationToken(tokenId, now);
-        assertThat(secondConsume).isFalse();
+        repository.clearFailures(subject, after);
+        CredentialRecord cleared = repository.findBySubject(subject).orElseThrow();
+        assertThat(cleared.failedLoginAttempts()).isZero();
+        assertThat(cleared.failureWindowStartedAt()).isNull();
     }
 
     @Test
-    @DisplayName("reset token lifecycle and double-spend protection on live Postgres")
-    void resetTokenLifecycleLivePostgres() {
-        UUID tokenId = UUID.randomUUID();
-        UUID subjectId = UUID.randomUUID();
-        String tokenHash = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
-        Instant now = Instant.now();
-        Instant expiresAt = now.plusSeconds(900);
+    @DisplayName("failures older than the window start a new count")
+    void failureWindow() {
+        UUID subject = UUID.randomUUID();
+        Instant now = now();
+        repository.insertCredential(subject, login(), "$argon2id$h", now);
+        repository.reserveAttempt(subject, POLICY, now);
+        repository.reserveAttempt(subject, POLICY, now);
 
-        repository.saveResetToken(tokenId, subjectId, tokenHash, expiresAt, now);
+        CredentialRecord later = repository.reserveAttempt(subject, POLICY, now.plus(POLICY.failureWindow())).orElseThrow();
 
-        Optional<TokenRecord> found = repository.findResetTokenByHash(tokenHash);
-        assertThat(found).isPresent();
-        assertThat(found.get().id()).isEqualTo(tokenId);
-        assertThat(found.get().consumedAt()).isNull();
+        assertThat(later.failedLoginAttempts()).isEqualTo(1);
+    }
 
-        Optional<TokenRecord> latest = repository.findLatestResetToken(subjectId);
-        assertThat(latest).isPresent();
-        assertThat(latest.get().id()).isEqualTo(tokenId);
+    @Test
+    @DisplayName("concurrent reservations never exceed maxAttempts")
+    void concurrentReservationsAreBounded() throws Exception {
+        UUID subject = UUID.randomUUID();
+        Instant now = now();
+        repository.insertCredential(subject, login(), "$argon2id$h", now);
 
-        // First consume succeeds
-        boolean firstConsume = repository.consumeResetToken(tokenId, now);
-        assertThat(firstConsume).isTrue();
+        List<Optional<CredentialRecord>> results = concurrently(16, () -> repository.reserveAttempt(subject, POLICY, now));
 
-        // Double-spend consume fails
-        boolean secondConsume = repository.consumeResetToken(tokenId, now);
-        assertThat(secondConsume).isFalse();
+        assertThat(results.stream().filter(Optional::isPresent).count()).isEqualTo(POLICY.maxAttempts());
+        assertThat(repository.findBySubject(subject).orElseThrow().failedLoginAttempts()).isEqualTo(POLICY.maxAttempts());
+    }
+
+    @Test
+    @DisplayName("hash replacement and password change are guarded by the expected hash")
+    void guardedPasswordWrites() {
+        UUID subject = UUID.randomUUID();
+        Instant now = now();
+        repository.insertCredential(subject, login(), "$argon2id$v1", now);
+        String resetHash = randomHash();
+        repository.issueResetToken(UUID.randomUUID(), subject, resetHash, now.plusSeconds(900), now, now.minusSeconds(60));
+
+        assertThat(repository.replacePasswordHash(subject, "$argon2id$stale", "$argon2id$x", now)).isFalse();
+        assertThat(repository.replacePasswordHash(subject, "$argon2id$v1", "$argon2id$v1b", now)).isTrue();
+        assertThat(repository.findBySubject(subject).orElseThrow().tokenVersion()).isEqualTo(1L);
+
+        assertThat(repository.changePassword(subject, "$argon2id$v1", "$argon2id$v2", now)).isEmpty();
+        assertThat(repository.changePassword(subject, "$argon2id$v1b", "$argon2id$v2", now)).isEqualTo(OptionalLong.of(2L));
+        assertThat(repository.findResetToken(resetHash).orElseThrow().consumedAt()).as("reset token voided").isNotNull();
+    }
+
+    @Test
+    @DisplayName("verification tokens: cooldown, supersession, single use under concurrency, expiry, verified state")
+    void verificationTokens() throws Exception {
+        UUID subject = UUID.randomUUID();
+        Instant now = now();
+        repository.insertCredential(subject, login(), "$argon2id$h", now);
+        String first = randomHash();
+        String second = randomHash();
+
+        assertThat(repository.issueVerificationToken(UUID.randomUUID(), subject, first, now.plusSeconds(3600), now, now.minusSeconds(60))).isTrue();
+        assertThat(repository.issueVerificationToken(UUID.randomUUID(), subject, randomHash(), now.plusSeconds(3600), now, now.minusSeconds(60)))
+                .as("inside the cooldown").isFalse();
+        Instant later = now.plusSeconds(120);
+        assertThat(repository.issueVerificationToken(UUID.randomUUID(), subject, second, later.plusSeconds(3600), later, later.minusSeconds(60))).isTrue();
+
+        assertThat(repository.consumeVerificationToken(first, later)).as("superseded").isEmpty();
+        assertThat(repository.consumeVerificationToken(second, later.plusSeconds(3600))).as("expired").isEmpty();
+        assertThat(repository.findBySubject(subject).orElseThrow().emailVerified()).isFalse();
+
+        List<Optional<UUID>> consumed = concurrently(8, () -> repository.consumeVerificationToken(second, later));
+        assertThat(consumed.stream().filter(Optional::isPresent).toList()).containsExactly(Optional.of(subject));
+        assertThat(repository.findBySubject(subject).orElseThrow().emailVerified()).isTrue();
+
+        Instant muchLater = later.plusSeconds(600);
+        assertThat(repository.issueVerificationToken(UUID.randomUUID(), subject, randomHash(), muchLater.plusSeconds(3600), muchLater, muchLater.minusSeconds(60)))
+                .as("already verified").isFalse();
+        assertThat(repository.issueVerificationToken(UUID.randomUUID(), UUID.randomUUID(), randomHash(), muchLater, muchLater, muchLater))
+                .as("unknown subject").isFalse();
+    }
+
+    @Test
+    @DisplayName("a reset token is consumed in the same transaction that sets the password, once")
+    void resetTokens() throws Exception {
+        UUID subject = UUID.randomUUID();
+        Instant now = now();
+        repository.insertCredential(subject, login(), "$argon2id$old", now);
+        repository.reserveAttempt(subject, POLICY, now);
+        String older = randomHash();
+        String token = randomHash();
+        repository.issueResetToken(UUID.randomUUID(), subject, older, now.plusSeconds(900), now, now.minusSeconds(60));
+        Instant later = now.plusSeconds(120);
+        repository.issueResetToken(UUID.randomUUID(), subject, token, later.plusSeconds(900), later, later.minusSeconds(60));
+
+        assertThat(repository.consumeResetToken(older, "$argon2id$x", later)).as("superseded").isEmpty();
+        assertThat(repository.consumeResetToken(token, "$argon2id$x", later.plusSeconds(900))).as("expired").isEmpty();
+        assertThat(repository.findBySubject(subject).orElseThrow().passwordHash()).isEqualTo("$argon2id$old");
+
+        List<OptionalLong> versions = concurrently(8, () -> repository.consumeResetToken(token, "$argon2id$new", later));
+        assertThat(versions.stream().filter(OptionalLong::isPresent).toList()).containsExactly(OptionalLong.of(2L));
+
+        CredentialRecord record = repository.findBySubject(subject).orElseThrow();
+        assertThat(record.passwordHash()).isEqualTo("$argon2id$new");
+        assertThat(record.tokenVersion()).isEqualTo(2L);
+        assertThat(record.failedLoginAttempts()).isZero();
+        assertThat(record.emailVerified()).isTrue();
+        assertThat(repository.findResetToken(token).orElseThrow().consumedAt()).isEqualTo(later);
+    }
+
+    @Test
+    @DisplayName("through the services: register, refuse a takeover, gate on verification, then sign in")
+    void servicesOverPostgres() {
+        InMemoryNotificationDispatcher dispatcher = new InMemoryNotificationDispatcher();
+        PasswordHashing hashing = new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(4));
+        DefaultCredentialStore store = new DefaultCredentialStore(repository, hashing, POLICY, null, null, Clock.systemUTC());
+        DefaultAccountVerification verification = new DefaultAccountVerification(
+                repository, dispatcher, null, TokenPolicy.defaults(), Clock.systemUTC());
+        UUID subject = UUID.randomUUID();
+        String login = login();
+        char[] pw = "SecretPassword123!".toCharArray();
+
+        store.createCredential(subject, login, pw);
+        assertThatThrownBy(() -> store.createCredential(UUID.randomUUID(), login.toUpperCase(java.util.Locale.ROOT), "Takeover123!".toCharArray()))
+                .isInstanceOf(CredentialAlreadyExistsException.class);
+        assertThat(store.authenticate(login, pw).isUnverified()).isTrue();
+
+        verification.issueVerification(login);
+        assertThat(verification.verifyAccount(dispatcher.dispatchedNotifications().getFirst().rawToken())).isEqualTo(subject);
+        assertThat(store.authenticate(login, pw).subjectId()).isEqualTo(subject);
+        assertThat(store.authenticate(login, "Takeover123!".toCharArray()).isInvalid()).isTrue();
+    }
+
+    private static <T> List<T> concurrently(int threads, Callable<T> task) throws Exception {
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<T>> futures = new ArrayList<>();
+        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    return task.call();
+                }));
+            }
+            start.countDown();
+            List<T> results = new ArrayList<>();
+            for (Future<T> future : futures) {
+                results.add(future.get());
+            }
+            return results;
+        }
+    }
+
+    private static String setting(String env, String property) {
+        String value = System.getProperty(property);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(env);
+        }
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private static Connection open() throws SQLException {
+        String separator = url.contains("?") ? "&" : "?";
+        return DriverManager.getConnection(url + separator + "currentSchema=" + TEST_SCHEMA, user, password);
+    }
+
+    private static String read(String resource) throws IOException {
+        try (InputStream in = PostgresCredentialRepositoryLiveIT.class.getClassLoader().getResourceAsStream(resource)) {
+            if (in == null) {
+                throw new IllegalStateException("missing migration " + resource);
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static List<String> statements(String sql) {
+        String withoutComments = sql.replaceAll("(?m)^\\s*--.*$", "");
+        List<String> statements = new ArrayList<>();
+        for (String candidate : withoutComments.split(";")) {
+            if (!candidate.isBlank()) {
+                statements.add(candidate.strip());
+            }
+        }
+        return statements;
+    }
+
+    /** One JDBC connection per unit of work, so concurrent callers contend in the database, not in the test. */
+    private static final class PerCallExecutor implements TransactionalExecutor {
+
+        @Override
+        public void execute(TransactionalWork work) {
+            executeManaged(work);
+        }
+
+        @Override
+        public void executeManaged(TransactionalWork work) {
+            try (Connection jdbc = open()) {
+                PersistenceConnection conn = new JdbcPersistenceConnection(jdbc);
+                conn.beginTransaction();
+                try {
+                    work.run(conn);
+                    conn.commit();
+                } catch (RuntimeException e) {
+                    conn.rollback();
+                    throw e;
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        @Override
+        public void executeManaged(TransactionIsolation isolation, boolean readOnly, TransactionalWork work) {
+            executeManaged(work);
+        }
+
+        @Override
+        public <T> T query(Function<PersistenceConnection, T> query) {
+            try (Connection jdbc = open()) {
+                return query.apply(new JdbcPersistenceConnection(jdbc));
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
     }
 }

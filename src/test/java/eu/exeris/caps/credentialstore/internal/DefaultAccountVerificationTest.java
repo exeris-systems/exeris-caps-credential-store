@@ -1,7 +1,11 @@
 package eu.exeris.caps.credentialstore.internal;
 
 import eu.exeris.caps.credentialstore.api.exception.InvalidTokenException;
-import eu.exeris.caps.credentialstore.api.exception.TokenCooldownException;
+import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
+import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
+import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
+import eu.exeris.caps.credentialstore.internal.crypto.SingleUseHashedToken;
 import eu.exeris.caps.credentialstore.internal.repository.InMemoryCredentialRepository;
 import eu.exeris.caps.credentialstore.spi.InMemoryNotificationDispatcher;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,149 +19,141 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DisplayName("DefaultAccountVerification Unit Tests")
+@DisplayName("DefaultAccountVerification")
 class DefaultAccountVerificationTest {
 
+    private static final String LOGIN = "user@exeris.eu";
+    private static final char[] PASSWORD = "SecretPassword123!".toCharArray();
+
     private InMemoryCredentialRepository repository;
-    private InMemoryNotificationDispatcher notificationDispatcher;
+    private InMemoryNotificationDispatcher dispatcher;
+    private MutableClock clock;
+    private TokenPolicy tokens;
+    private DefaultCredentialStore store;
     private DefaultAccountVerification verification;
+    private UUID subject;
 
     @BeforeEach
     void setUp() {
         repository = new InMemoryCredentialRepository();
-        notificationDispatcher = new InMemoryNotificationDispatcher();
-        verification = new DefaultAccountVerification(
-                repository,
-                notificationDispatcher,
-                null,
-                Duration.ofSeconds(60),
-                Duration.ofHours(24)
-        );
+        dispatcher = new InMemoryNotificationDispatcher();
+        clock = new MutableClock(Instant.parse("2026-10-13T12:00:00Z"));
+        tokens = new TokenPolicy(Duration.ofHours(24), Duration.ofMinutes(15), Duration.ofSeconds(60));
+        store = new DefaultCredentialStore(repository,
+                new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(2)),
+                LockoutPolicy.defaults(), null, null, clock);
+        verification = new DefaultAccountVerification(repository, dispatcher, null, tokens, clock);
+        subject = UUID.randomUUID();
+        store.createCredential(subject, LOGIN, PASSWORD);
+    }
+
+    private String issued() {
+        return dispatcher.dispatchedNotifications().getLast().rawToken();
     }
 
     @Test
-    @DisplayName("issue verification generates token, persists hash, and dispatches raw token via notification")
-    void issueVerificationGeneratesAndDispatches() {
-        UUID subjectId = UUID.randomUUID();
-        String email = "operator@exeris.eu";
+    @DisplayName("sends a token to the stored login and keeps only its hash")
+    void issuesToStoredLogin() {
+        verification.issueVerification("User@Exeris.eu");
 
-        // Seed subject credential
-        repository.saveCredential(subjectId, "hash", Instant.now());
-        assertThat(repository.isEmailVerified(subjectId)).isFalse();
-
-        verification.issueVerification(subjectId, email);
-
-        assertThat(notificationDispatcher.dispatchedNotifications()).hasSize(1);
-        InMemoryNotificationDispatcher.DispatchedNotification notification = notificationDispatcher.dispatchedNotifications().get(0);
-        assertThat(notification.type()).isEqualTo("VERIFICATION");
-        assertThat(notification.subjectId()).isEqualTo(subjectId);
-        assertThat(notification.recipientEmail()).isEqualTo(email);
-        assertThat(notification.rawToken()).hasSize(32);
+        assertThat(dispatcher.dispatchedNotifications()).singleElement().satisfies(n -> {
+            assertThat(n.type()).isEqualTo("VERIFICATION");
+            assertThat(n.subjectId()).isEqualTo(subject);
+            assertThat(n.recipientEmail()).isEqualTo(LOGIN);
+        });
+        assertThat(repository.verificationTokens()).singleElement().satisfies(t -> {
+            assertThat(t.tokenHash()).isEqualTo(SingleUseHashedToken.hashToken(issued()));
+            assertThat(t.tokenHash()).isNotEqualTo(issued());
+            assertThat(t.expiresAt()).isEqualTo(clock.instant().plus(tokens.verificationValidity()));
+        });
     }
 
     @Test
-    @DisplayName("rapid second issue triggers TokenCooldownException")
-    void rapidSecondIssueTriggersCooldown() {
-        UUID subjectId = UUID.randomUUID();
-        String email = "operator@exeris.eu";
+    @DisplayName("issues nothing, and says nothing, for an unknown login, a verified account or inside the cooldown")
+    void silentRefusals() {
+        verification.issueVerification("nobody@exeris.eu");
+        assertThat(dispatcher.dispatchedNotifications()).isEmpty();
 
-        verification.issueVerification(subjectId, email);
+        verification.issueVerification(LOGIN);
+        verification.issueVerification(LOGIN);
+        assertThat(dispatcher.dispatchedNotifications()).hasSize(1);
 
-        assertThatThrownBy(() -> verification.issueVerification(subjectId, email))
-                .isInstanceOf(TokenCooldownException.class)
-                .satisfies(ex -> {
-                    TokenCooldownException ce = (TokenCooldownException) ex;
-                    assertThat(ce.remainingCooldown()).isPositive();
-                    assertThat(ce.remainingCooldown()).isLessThanOrEqualTo(Duration.ofSeconds(60));
-                });
+        verification.verifyAccount(issued());
+        clock.advance(tokens.issueCooldown().plusSeconds(1));
+        verification.issueVerification(LOGIN);
+        assertThat(dispatcher.dispatchedNotifications()).hasSize(1);
     }
 
     @Test
-    @DisplayName("consuming valid token marks account verified and returns subjectId")
-    void verifyAccountSuccess() {
-        UUID subjectId = UUID.randomUUID();
-        String email = "operator@exeris.eu";
+    @DisplayName("consuming the token verifies the account and unlocks authentication")
+    void verifies() {
+        assertThat(store.authenticate(LOGIN, PASSWORD).isUnverified()).isTrue();
+        verification.issueVerification(LOGIN);
 
-        repository.saveCredential(subjectId, "hash", Instant.now());
-        assertThat(repository.isEmailVerified(subjectId)).isFalse();
+        assertThat(verification.verifyAccount(issued())).isEqualTo(subject);
 
-        verification.issueVerification(subjectId, email);
-        String rawToken = notificationDispatcher.dispatchedNotifications().get(0).rawToken();
-
-        UUID verifiedSubject = verification.verifyAccount(rawToken);
-        assertThat(verifiedSubject).isEqualTo(subjectId);
-        assertThat(repository.isEmailVerified(subjectId)).isTrue();
+        assertThat(store.isVerified(subject)).isTrue();
+        assertThat(store.authenticate(LOGIN, PASSWORD).isSuccess()).isTrue();
     }
 
     @Test
-    @DisplayName("double-spending the same token throws InvalidTokenException")
-    void doubleSpendThrowsInvalidToken() {
-        UUID subjectId = UUID.randomUUID();
-        String email = "operator@exeris.eu";
+    @DisplayName("a token is single-use")
+    void singleUse() {
+        verification.issueVerification(LOGIN);
+        String token = issued();
+        verification.verifyAccount(token);
 
-        repository.saveCredential(subjectId, "hash", Instant.now());
-        verification.issueVerification(subjectId, email);
-        String rawToken = notificationDispatcher.dispatchedNotifications().get(0).rawToken();
-
-        verification.verifyAccount(rawToken);
-
-        // Second attempt with same raw token
-        assertThatThrownBy(() -> verification.verifyAccount(rawToken))
-                .isInstanceOf(InvalidTokenException.class)
-                .hasMessageContaining("already been consumed");
+        assertThatThrownBy(() -> verification.verifyAccount(token)).isInstanceOf(InvalidTokenException.class);
     }
 
     @Test
-    @DisplayName("expired token throws InvalidTokenException")
-    void expiredTokenThrows() {
-        // Create verification service with 1-millisecond validity
-        DefaultAccountVerification shortLivedVerification = new DefaultAccountVerification(
-                repository,
-                notificationDispatcher,
-                null,
-                Duration.ofMillis(1),
-                Duration.ofMillis(1)
-        );
+    @DisplayName("an expired token is refused and leaves the account unverified")
+    void expired() {
+        verification.issueVerification(LOGIN);
+        clock.advance(tokens.verificationValidity());
 
-        UUID subjectId = UUID.randomUUID();
-        shortLivedVerification.issueVerification(subjectId, "test@exeris.eu");
-        String rawToken = notificationDispatcher.dispatchedNotifications().get(0).rawToken();
+        assertThatThrownBy(() -> verification.verifyAccount(issued())).isInstanceOf(InvalidTokenException.class);
+        assertThat(store.isVerified(subject)).isFalse();
+    }
 
-        // Wait to expire
+    @Test
+    @DisplayName("a newer token supersedes the older one")
+    void superseded() {
+        verification.issueVerification(LOGIN);
+        String first = issued();
+        clock.advance(tokens.issueCooldown().plusSeconds(1));
+        verification.issueVerification(LOGIN);
+
+        assertThatThrownBy(() -> verification.verifyAccount(first)).isInstanceOf(InvalidTokenException.class);
+        assertThat(verification.verifyAccount(issued())).isEqualTo(subject);
+    }
+
+    @Test
+    @DisplayName("an unknown token is refused with the same message as an expired one")
+    void unknownTokenSameMessage() {
+        verification.issueVerification(LOGIN);
+        String token = issued();
+        clock.advance(tokens.verificationValidity());
+
+        String expired = catchMessage(token);
+        String unknown = catchMessage("0".repeat(32));
+        assertThat(unknown).isEqualTo(expired);
+    }
+
+    private String catchMessage(String token) {
         try {
-            Thread.sleep(10);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            verification.verifyAccount(token);
+            throw new AssertionError("expected InvalidTokenException");
+        } catch (InvalidTokenException e) {
+            return e.getMessage();
         }
-
-        assertThatThrownBy(() -> shortLivedVerification.verifyAccount(rawToken))
-                .isInstanceOf(InvalidTokenException.class)
-                .hasMessageContaining("expired");
     }
 
     @Test
-    @DisplayName("non-existent token throws InvalidTokenException")
-    void nonExistentTokenThrows() {
-        assertThatThrownBy(() -> verification.verifyAccount("0123456789abcdef0123456789abcdef"))
-                .isInstanceOf(InvalidTokenException.class)
-                .hasMessageContaining("not found");
-    }
-
-    @Test
-    @DisplayName("parameter validation rejects null and blank inputs")
-    void parameterValidations() {
-        UUID subjectId = UUID.randomUUID();
-
-        assertThatThrownBy(() -> verification.issueVerification(null, "test@exeris.eu"))
-                .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> verification.issueVerification(subjectId, null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> verification.issueVerification(subjectId, "   "))
-                .isInstanceOf(IllegalArgumentException.class);
-
-        assertThatThrownBy(() -> verification.verifyAccount(null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> verification.verifyAccount(""))
-                .isInstanceOf(IllegalArgumentException.class);
+    @DisplayName("rejects blank and malformed arguments")
+    void rejectsMalformed() {
+        assertThatThrownBy(() -> verification.issueVerification(null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> verification.issueVerification("not-an-address")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> verification.verifyAccount(" ")).isInstanceOf(IllegalArgumentException.class);
     }
 }

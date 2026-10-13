@@ -2,260 +2,207 @@ package eu.exeris.caps.credentialstore.internal;
 
 import eu.exeris.caps.credentialstore.api.CredentialStore;
 import eu.exeris.caps.credentialstore.api.exception.AccountLockedException;
+import eu.exeris.caps.credentialstore.api.exception.CredentialAlreadyExistsException;
 import eu.exeris.caps.credentialstore.api.exception.InvalidCredentialException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
-import eu.exeris.caps.credentialstore.api.RehashablePasswordEncoder;
 import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
 import eu.exeris.caps.credentialstore.api.model.LockoutState;
 import eu.exeris.caps.credentialstore.internal.audit.AuditTrailBridge;
-import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
+import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
 import eu.exeris.caps.credentialstore.internal.repository.CredentialRecord;
 import eu.exeris.caps.credentialstore.internal.repository.CredentialRepository;
 import eu.exeris.caps.credentialstore.spi.SessionStore;
-import eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder;
 
+import java.time.Clock;
 import java.time.Instant;
-import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 
 /**
  * Default implementation of {@link CredentialStore}.
  *
- * <p>Isolates DB connection holds from expensive Argon2id derivations via {@link KdfConcurrencyThrottler},
- * wipes sensitive password char buffers, and cascades session revocation on password changes.
+ * <p>A password check reserves a lockout attempt before the key derivation and runs the derivation against
+ * the hash the reservation returned, so neither a concurrent burst of guesses nor a concurrent password
+ * change can slip between the lockout decision and the comparison. An unknown login, and a refused
+ * reservation, run a derivation too.
  */
 public final class DefaultCredentialStore implements CredentialStore {
 
     private final CredentialRepository repository;
-    private final KernelPasswordEncoder passwordEncoder;
-    private final KdfConcurrencyThrottler throttler;
+    private final PasswordHashing hashing;
     private final LockoutPolicy lockoutPolicy;
     private final SessionStore sessionStore;
     private final AuditTrailBridge auditTrail;
-    private final String dummyPasswordHash;
+    private final Clock clock;
 
     public DefaultCredentialStore(
             CredentialRepository repository,
-            KernelPasswordEncoder passwordEncoder,
-            KdfConcurrencyThrottler throttler,
+            PasswordHashing hashing,
             LockoutPolicy lockoutPolicy,
             SessionStore sessionStore,
-            AuditTrailBridge auditTrail
+            AuditTrailBridge auditTrail,
+            Clock clock
     ) {
         this.repository = Objects.requireNonNull(repository, "repository must not be null");
-        this.passwordEncoder = Objects.requireNonNull(passwordEncoder, "passwordEncoder must not be null");
-        this.throttler = Objects.requireNonNull(throttler, "throttler must not be null");
+        this.hashing = Objects.requireNonNull(hashing, "hashing must not be null");
         this.lockoutPolicy = Objects.requireNonNull(lockoutPolicy, "lockoutPolicy must not be null");
         this.sessionStore = sessionStore;
         this.auditTrail = auditTrail;
-
-        char[] dummy = "ExerisDummyPass$123".toCharArray();
-        try {
-            this.dummyPasswordHash = this.throttler.execute(() -> this.passwordEncoder.encode(dummy));
-        } finally {
-            Arrays.fill(dummy, '\0');
-        }
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     @Override
-    public void setCredential(UUID subjectId, char[] newPassword) {
+    public void createCredential(UUID subjectId, String loginIdentifier, char[] password) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        if (newPassword == null || newPassword.length == 0) {
-            throw new IllegalArgumentException("newPassword must not be null or empty");
+        String login = LoginIdentifiers.normalize(loginIdentifier);
+        requirePassword(password, "password");
+
+        String hash = hashing.encode(password);
+        if (!repository.insertCredential(subjectId, login, hash, clock.instant())) {
+            throw new CredentialAlreadyExistsException();
         }
-        char[] copy = Arrays.copyOf(newPassword, newPassword.length);
-        try {
-            String hash = throttler.execute(() -> passwordEncoder.encode(copy));
-            repository.saveCredential(subjectId, hash, Instant.now());
-            if (auditTrail != null) {
-                auditTrail.emit("CREDENTIAL_SET", subjectId, Map.of());
+        audit("CREDENTIAL_CREATED", subjectId, Map.of());
+    }
+
+    @Override
+    public CredentialVerificationResult authenticate(String loginIdentifier, char[] password) {
+        String login = LoginIdentifiers.normalize(loginIdentifier);
+        requirePassword(password, "password");
+        Optional<CredentialRecord> record = repository.findByLoginIdentifier(login);
+        if (record.isEmpty()) {
+            hashing.burn(password);
+            return CredentialVerificationResult.invalid();
+        }
+        return check(record.get().subjectId(), password);
+    }
+
+    @Override
+    public CredentialVerificationResult verifyCredential(UUID subjectId, char[] password) {
+        Objects.requireNonNull(subjectId, "subjectId must not be null");
+        requirePassword(password, "password");
+        return check(subjectId, password);
+    }
+
+    private CredentialVerificationResult check(UUID subjectId, char[] password) {
+        Instant now = clock.instant();
+        Optional<CredentialRecord> reserved = repository.reserveAttempt(subjectId, lockoutPolicy, now);
+        if (reserved.isEmpty()) {
+            hashing.burn(password);
+            return activeLockout(subjectId, now)
+                    .map(CredentialVerificationResult::locked)
+                    .orElseGet(CredentialVerificationResult::invalid);
+        }
+        CredentialRecord record = reserved.get();
+        if (!hashing.matches(password, record.passwordHash())) {
+            Optional<Instant> lockedUntil = repository.lockIfExhausted(subjectId, lockoutPolicy, now);
+            if (lockedUntil.isPresent()) {
+                audit("ACCOUNT_LOCKED", subjectId, Map.of("lockedUntil", lockedUntil.get().toString()));
+                return CredentialVerificationResult.locked(lockedUntil.get());
             }
-        } finally {
-            Arrays.fill(copy, '\0');
-        }
-    }
-
-    @Override
-    public CredentialVerificationResult verifyCredential(UUID subjectId, char[] candidatePassword) {
-        Objects.requireNonNull(subjectId, "subjectId must not be null");
-        if (candidatePassword == null || candidatePassword.length == 0) {
-            throw new IllegalArgumentException("candidatePassword must not be null or empty");
-        }
-
-        Optional<CredentialRecord> opt = repository.findCredential(subjectId);
-        if (opt.isEmpty()) {
+            audit("AUTH_FAILURE", subjectId, Map.of("failedAttempts", record.failedLoginAttempts()));
             return CredentialVerificationResult.invalid();
         }
 
-        CredentialRecord record = opt.get();
-        Instant now = Instant.now();
-
-        // Check active lockout
-        if (record.lockedUntil() != null && record.lockedUntil().isAfter(now)) {
-            return CredentialVerificationResult.locked(record.lockedUntil());
+        repository.clearFailures(subjectId, now);
+        if (!record.emailVerified()) {
+            audit("AUTH_UNVERIFIED", subjectId, Map.of());
+            return CredentialVerificationResult.unverified(subjectId);
         }
-
-        char[] copy = Arrays.copyOf(candidatePassword, candidatePassword.length);
-        boolean matches;
-        try {
-            matches = throttler.execute(() -> passwordEncoder.matches(copy, record.passwordHash()));
-        } finally {
-            Arrays.fill(copy, '\0');
+        if (hashing.needsRehash(record.passwordHash())) {
+            repository.replacePasswordHash(subjectId, record.passwordHash(), hashing.encode(password), now);
         }
-
-        if (matches) {
-            if (record.failedLoginAttempts() > 0 || record.lockedUntil() != null) {
-                repository.unlockAccount(subjectId, now);
-            }
-            if (auditTrail != null) {
-                auditTrail.emit("AUTH_SUCCESS", subjectId, Map.of());
-            }
-            if (passwordEncoder instanceof RehashablePasswordEncoder rehashable
-                    && rehashable.needsRehash(record.passwordHash())) {
-                char[] rehashCopy = Arrays.copyOf(candidatePassword, candidatePassword.length);
-                try {
-                    String upgradedHash = throttler.execute(() -> passwordEncoder.encode(rehashCopy));
-                    repository.saveCredential(subjectId, upgradedHash, now);
-                } finally {
-                    Arrays.fill(rehashCopy, '\0');
-                }
-            }
-            return CredentialVerificationResult.success();
-        } else {
-            int currentFailed = (record.lockedUntil() != null && !record.lockedUntil().isAfter(now))
-                    ? 0
-                    : record.failedLoginAttempts();
-            int newAttempts = currentFailed + 1;
-            if (newAttempts >= lockoutPolicy.maxAttempts()) {
-                Instant lockedUntil = now.plus(lockoutPolicy.lockoutDuration());
-                repository.recordFailedLogin(subjectId, newAttempts, lockedUntil, now);
-                if (auditTrail != null) {
-                    auditTrail.emit("ACCOUNT_LOCKED", subjectId, Map.of(
-                            "failedAttempts", newAttempts,
-                            "lockedUntil", lockedUntil.toString()
-                    ));
-                }
-                return CredentialVerificationResult.locked(lockedUntil);
-            } else {
-                repository.recordFailedLogin(subjectId, newAttempts, null, now);
-                if (auditTrail != null) {
-                    auditTrail.emit("AUTH_FAILURE", subjectId, Map.of("failedAttempts", newAttempts));
-                }
-                return CredentialVerificationResult.invalid();
-            }
-        }
-    }
-
-    @Override
-    public void verifyDummy(char[] candidatePassword) {
-        if (candidatePassword == null || candidatePassword.length == 0) {
-            throw new IllegalArgumentException("candidatePassword must not be null or empty");
-        }
-        char[] copy = Arrays.copyOf(candidatePassword, candidatePassword.length);
-        try {
-            throttler.execute(() -> passwordEncoder.matches(copy, dummyPasswordHash));
-        } finally {
-            Arrays.fill(copy, '\0');
-        }
+        audit("AUTH_SUCCESS", subjectId, Map.of());
+        return CredentialVerificationResult.success(subjectId);
     }
 
     @Override
     public void changePassword(UUID subjectId, char[] currentPassword, char[] newPassword) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        if (currentPassword == null || currentPassword.length == 0) {
-            throw new IllegalArgumentException("currentPassword must not be null or empty");
-        }
-        if (newPassword == null || newPassword.length == 0) {
-            throw new IllegalArgumentException("newPassword must not be null or empty");
-        }
+        requirePassword(currentPassword, "currentPassword");
+        requirePassword(newPassword, "newPassword");
 
-        CredentialRecord record = repository.findCredential(subjectId)
-                .orElseThrow(() -> new InvalidCredentialException("Credential not found for subject: " + subjectId));
-
-        Instant now = Instant.now();
-        if (record.lockedUntil() != null && record.lockedUntil().isAfter(now)) {
-            throw new AccountLockedException("Account is locked until " + record.lockedUntil(), record.lockedUntil());
-        }
-
-        char[] currentCopy = Arrays.copyOf(currentPassword, currentPassword.length);
-        char[] newCopy = Arrays.copyOf(newPassword, newPassword.length);
-        try {
-            boolean currentMatches = throttler.execute(() -> passwordEncoder.matches(currentCopy, record.passwordHash()));
-            if (!currentMatches) {
-                int currentFailed = (record.lockedUntil() != null && !record.lockedUntil().isAfter(now))
-                        ? 0
-                        : record.failedLoginAttempts();
-                int newAttempts = currentFailed + 1;
-                if (newAttempts >= lockoutPolicy.maxAttempts()) {
-                    Instant lockedUntil = now.plus(lockoutPolicy.lockoutDuration());
-                    repository.recordFailedLogin(subjectId, newAttempts, lockedUntil, now);
-                    if (auditTrail != null) {
-                        auditTrail.emit("ACCOUNT_LOCKED", subjectId, Map.of(
-                                "failedAttempts", newAttempts,
-                                "lockedUntil", lockedUntil.toString()
-                        ));
-                    }
-                    throw new AccountLockedException("Account locked due to excessive failed attempts", lockedUntil);
-                } else {
-                    repository.recordFailedLogin(subjectId, newAttempts, null, now);
-                    if (auditTrail != null) {
-                        auditTrail.emit("AUTH_FAILURE", subjectId, Map.of("failedAttempts", newAttempts));
-                    }
-                    throw new InvalidCredentialException("Current password does not match");
-                }
+        Instant now = clock.instant();
+        Optional<CredentialRecord> reserved = repository.reserveAttempt(subjectId, lockoutPolicy, now);
+        if (reserved.isEmpty()) {
+            hashing.burn(currentPassword);
+            Optional<Instant> lockedUntil = activeLockout(subjectId, now);
+            if (lockedUntil.isPresent()) {
+                throw new AccountLockedException("Account is locked", lockedUntil.get());
             }
-
-            boolean samePassword = throttler.execute(() -> passwordEncoder.matches(newCopy, record.passwordHash()));
-            if (samePassword) {
-                throw new SamePasswordException("New password cannot be identical to current password");
-            }
-
-            String newHash = throttler.execute(() -> passwordEncoder.encode(newCopy));
-            long newTokenVersion = record.tokenVersion() + 1;
-            repository.updatePassword(subjectId, newHash, newTokenVersion, now);
-
-            if (sessionStore != null) {
-                sessionStore.revokeAllForSubject(subjectId);
-            }
-            if (auditTrail != null) {
-                auditTrail.emit("PASSWORD_CHANGED", subjectId, Map.of("tokenVersion", newTokenVersion));
-            }
-        } finally {
-            Arrays.fill(currentCopy, '\0');
-            Arrays.fill(newCopy, '\0');
+            throw new InvalidCredentialException("Current password does not match");
         }
+        CredentialRecord record = reserved.get();
+        if (!hashing.matches(currentPassword, record.passwordHash())) {
+            Optional<Instant> lockedUntil = repository.lockIfExhausted(subjectId, lockoutPolicy, now);
+            if (lockedUntil.isPresent()) {
+                audit("ACCOUNT_LOCKED", subjectId, Map.of("lockedUntil", lockedUntil.get().toString()));
+                throw new AccountLockedException("Account is locked", lockedUntil.get());
+            }
+            audit("AUTH_FAILURE", subjectId, Map.of("failedAttempts", record.failedLoginAttempts()));
+            throw new InvalidCredentialException("Current password does not match");
+        }
+        repository.clearFailures(subjectId, now);
+        if (hashing.matches(newPassword, record.passwordHash())) {
+            throw new SamePasswordException("New password cannot be identical to current password");
+        }
+
+        String newHash = hashing.encode(newPassword);
+        OptionalLong tokenVersion = repository.changePassword(subjectId, record.passwordHash(), newHash, now);
+        if (tokenVersion.isEmpty()) {
+            throw new InvalidCredentialException("Current password does not match");
+        }
+        if (sessionStore != null) {
+            sessionStore.revokeAllForSubject(subjectId);
+        }
+        audit("PASSWORD_CHANGED", subjectId, Map.of("tokenVersion", tokenVersion.getAsLong()));
     }
 
     @Override
     public void clearLockout(UUID subjectId) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        repository.unlockAccount(subjectId, Instant.now());
-        if (auditTrail != null) {
-            auditTrail.emit("LOCKOUT_CLEARED", subjectId, Map.of());
-        }
+        repository.clearFailures(subjectId, clock.instant());
+        audit("LOCKOUT_CLEARED", subjectId, Map.of());
     }
 
     @Override
     public long getTokenVersion(UUID subjectId) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        return repository.getTokenVersion(subjectId);
+        return repository.findBySubject(subjectId).map(CredentialRecord::tokenVersion).orElse(1L);
     }
 
     @Override
     public boolean isVerified(UUID subjectId) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        return repository.isEmailVerified(subjectId);
+        return repository.findBySubject(subjectId).map(CredentialRecord::emailVerified).orElse(false);
     }
 
     @Override
     public LockoutState getLockoutState(UUID subjectId) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        return repository.findCredential(subjectId)
+        return repository.findBySubject(subjectId)
                 .map(r -> new LockoutState(r.failedLoginAttempts(), r.lockedUntil()))
                 .orElseGet(() -> LockoutState.unlocked(0));
+    }
+
+    private Optional<Instant> activeLockout(UUID subjectId, Instant now) {
+        return repository.findBySubject(subjectId)
+                .map(CredentialRecord::lockedUntil)
+                .filter(until -> until.isAfter(now));
+    }
+
+    private void audit(String action, UUID subjectId, Map<String, Object> details) {
+        if (auditTrail != null) {
+            auditTrail.emit(action, subjectId, details);
+        }
+    }
+
+    static void requirePassword(char[] password, String name) {
+        if (password == null || password.length == 0) {
+            throw new IllegalArgumentException(name + " must not be null or empty");
+        }
     }
 }

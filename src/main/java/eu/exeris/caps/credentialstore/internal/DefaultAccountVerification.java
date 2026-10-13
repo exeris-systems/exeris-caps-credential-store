@@ -2,14 +2,14 @@ package eu.exeris.caps.credentialstore.internal;
 
 import eu.exeris.caps.credentialstore.api.AccountVerification;
 import eu.exeris.caps.credentialstore.api.exception.InvalidTokenException;
-import eu.exeris.caps.credentialstore.api.exception.TokenCooldownException;
+import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.audit.AuditTrailBridge;
 import eu.exeris.caps.credentialstore.internal.crypto.SingleUseHashedToken;
+import eu.exeris.caps.credentialstore.internal.repository.CredentialRecord;
 import eu.exeris.caps.credentialstore.internal.repository.CredentialRepository;
-import eu.exeris.caps.credentialstore.internal.repository.TokenRecord;
 import eu.exeris.caps.credentialstore.spi.NotificationDispatcher;
 
-import java.time.Duration;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
@@ -17,67 +17,50 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Default implementation of {@link AccountVerification}.
+ * Default implementation of {@link AccountVerification}. A token is only ever sent to the login identifier
+ * stored with the credential, never to an address the caller supplies.
  */
 public final class DefaultAccountVerification implements AccountVerification {
-
-    private static final Duration DEFAULT_COOLDOWN = Duration.ofSeconds(60);
-    private static final Duration DEFAULT_VALIDITY = Duration.ofHours(24);
 
     private final CredentialRepository repository;
     private final NotificationDispatcher notificationDispatcher;
     private final AuditTrailBridge auditTrail;
-    private final Duration cooldownDuration;
-    private final Duration validityDuration;
-
-    public DefaultAccountVerification(
-            CredentialRepository repository,
-            NotificationDispatcher notificationDispatcher,
-            AuditTrailBridge auditTrail
-    ) {
-        this(repository, notificationDispatcher, auditTrail, DEFAULT_COOLDOWN, DEFAULT_VALIDITY);
-    }
+    private final TokenPolicy tokenPolicy;
+    private final Clock clock;
 
     public DefaultAccountVerification(
             CredentialRepository repository,
             NotificationDispatcher notificationDispatcher,
             AuditTrailBridge auditTrail,
-            Duration cooldownDuration,
-            Duration validityDuration
+            TokenPolicy tokenPolicy,
+            Clock clock
     ) {
         this.repository = Objects.requireNonNull(repository, "repository must not be null");
         this.notificationDispatcher = Objects.requireNonNull(notificationDispatcher, "notificationDispatcher must not be null");
         this.auditTrail = auditTrail;
-        this.cooldownDuration = Objects.requireNonNull(cooldownDuration, "cooldownDuration must not be null");
-        this.validityDuration = Objects.requireNonNull(validityDuration, "validityDuration must not be null");
+        this.tokenPolicy = Objects.requireNonNull(tokenPolicy, "tokenPolicy must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     @Override
-    public void issueVerification(UUID subjectId, String recipientEmail) {
-        Objects.requireNonNull(subjectId, "subjectId must not be null");
-        if (recipientEmail == null || recipientEmail.isBlank()) {
-            throw new IllegalArgumentException("recipientEmail must not be null or blank");
+    public void issueVerification(String loginIdentifier) {
+        String login = LoginIdentifiers.normalize(loginIdentifier);
+        Optional<CredentialRecord> record = repository.findByLoginIdentifier(login);
+        if (record.isEmpty() || record.get().emailVerified()) {
+            return;
         }
-
-        Instant now = Instant.now();
-        Optional<TokenRecord> latest = repository.findLatestVerificationToken(subjectId);
-        if (latest.isPresent()) {
-            Duration elapsed = Duration.between(latest.get().createdAt(), now);
-            if (elapsed.compareTo(cooldownDuration) < 0) {
-                Duration remaining = cooldownDuration.minus(elapsed);
-                throw new TokenCooldownException("Verification token request is on cooldown", remaining);
-            }
-        }
-
+        UUID subjectId = record.get().subjectId();
+        Instant now = clock.instant();
         SingleUseHashedToken.GeneratedToken token = SingleUseHashedToken.generate();
-        UUID tokenId = UUID.randomUUID();
-        Instant expiresAt = now.plus(validityDuration);
-
-        repository.saveVerificationToken(tokenId, subjectId, token.tokenHash(), expiresAt, now);
-        notificationDispatcher.sendVerificationToken(subjectId, recipientEmail, token.rawToken());
-
+        boolean issued = repository.issueVerificationToken(
+                UUID.randomUUID(), subjectId, token.tokenHash(),
+                now.plus(tokenPolicy.verificationValidity()), now, now.minus(tokenPolicy.issueCooldown()));
+        if (!issued) {
+            return;
+        }
+        notificationDispatcher.sendVerificationToken(subjectId, record.get().loginIdentifier(), token.rawToken());
         if (auditTrail != null) {
-            auditTrail.emit("VERIFICATION_ISSUED", subjectId, Map.of("recipientEmail", recipientEmail));
+            auditTrail.emit("VERIFICATION_ISSUED", subjectId, Map.of());
         }
     }
 
@@ -86,30 +69,11 @@ public final class DefaultAccountVerification implements AccountVerification {
         if (rawToken == null || rawToken.isBlank()) {
             throw new IllegalArgumentException("rawToken must not be null or blank");
         }
-
-        String hash = SingleUseHashedToken.hashToken(rawToken);
-        TokenRecord record = repository.findVerificationTokenByHash(hash)
-                .orElseThrow(() -> new InvalidTokenException("Verification token not found or invalid"));
-
-        Instant now = Instant.now();
-        if (record.expiresAt().isBefore(now)) {
-            throw new InvalidTokenException("Verification token has expired");
-        }
-        if (record.consumedAt() != null) {
-            throw new InvalidTokenException("Verification token has already been consumed");
-        }
-
-        boolean consumed = repository.consumeVerificationToken(record.id(), now);
-        if (!consumed) {
-            throw new InvalidTokenException("Verification token has already been consumed (double-spend detected)");
-        }
-
-        repository.setEmailVerified(record.subjectId(), now);
-
+        UUID subjectId = repository.consumeVerificationToken(SingleUseHashedToken.hashToken(rawToken), clock.instant())
+                .orElseThrow(() -> new InvalidTokenException("Verification token is invalid or expired"));
         if (auditTrail != null) {
-            auditTrail.emit("ACCOUNT_VERIFIED", record.subjectId(), Map.of());
+            auditTrail.emit("ACCOUNT_VERIFIED", subjectId, Map.of());
         }
-
-        return record.subjectId();
+        return subjectId;
     }
 }

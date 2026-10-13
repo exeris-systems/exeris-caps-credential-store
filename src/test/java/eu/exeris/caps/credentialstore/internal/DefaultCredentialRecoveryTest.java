@@ -2,14 +2,14 @@ package eu.exeris.caps.credentialstore.internal;
 
 import eu.exeris.caps.credentialstore.api.exception.InvalidTokenException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
-import eu.exeris.caps.credentialstore.api.exception.TokenCooldownException;
-import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
+import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
+import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
+import eu.exeris.caps.credentialstore.internal.crypto.SingleUseHashedToken;
 import eu.exeris.caps.credentialstore.internal.repository.InMemoryCredentialRepository;
 import eu.exeris.caps.credentialstore.spi.InMemoryNotificationDispatcher;
 import eu.exeris.caps.credentialstore.spi.InMemorySessionStore;
-import eu.exeris.kernel.community.security.Argon2idPasswordEncoder;
-import eu.exeris.kernel.spi.security.credentials.PasswordEncoderConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -21,233 +21,166 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DisplayName("DefaultCredentialRecovery Unit Tests")
+@DisplayName("DefaultCredentialRecovery")
 class DefaultCredentialRecoveryTest {
 
+    private static final String LOGIN = "user@exeris.eu";
+    private static final char[] PASSWORD = "SecretPassword123!".toCharArray();
+    private static final char[] NEXT = "NextPassword456!".toCharArray();
+
     private InMemoryCredentialRepository repository;
-    private Argon2idPasswordEncoder passwordEncoder;
-    private KdfConcurrencyThrottler throttler;
-    private InMemoryNotificationDispatcher notificationDispatcher;
-    private InMemorySessionStore sessionStore;
+    private InMemoryNotificationDispatcher dispatcher;
+    private InMemorySessionStore sessions;
+    private MutableClock clock;
+    private TokenPolicy tokens;
+    private LockoutPolicy lockout;
+    private DefaultCredentialStore store;
     private DefaultCredentialRecovery recovery;
+    private UUID subject;
 
     @BeforeEach
     void setUp() {
         repository = new InMemoryCredentialRepository();
-        passwordEncoder = new Argon2idPasswordEncoder(new PasswordEncoderConfig(8192, 1, 1, 16));
-        throttler = new KdfConcurrencyThrottler(4);
-        notificationDispatcher = new InMemoryNotificationDispatcher();
-        sessionStore = new InMemorySessionStore();
-        recovery = new DefaultCredentialRecovery(
-                repository,
-                passwordEncoder,
-                throttler,
-                notificationDispatcher,
-                sessionStore,
-                null,
-                Duration.ofSeconds(60),
-                Duration.ofMinutes(15)
-        );
+        dispatcher = new InMemoryNotificationDispatcher();
+        sessions = new InMemorySessionStore();
+        clock = new MutableClock(Instant.parse("2026-10-13T12:00:00Z"));
+        tokens = new TokenPolicy(Duration.ofHours(24), Duration.ofMinutes(15), Duration.ofSeconds(60));
+        lockout = LockoutPolicy.defaults();
+        PasswordHashing hashing = new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(2));
+        store = new DefaultCredentialStore(repository, hashing, lockout, sessions, null, clock);
+        recovery = new DefaultCredentialRecovery(repository, hashing, dispatcher, sessions, null, tokens, clock);
+        subject = UUID.randomUUID();
+        store.createCredential(subject, LOGIN, PASSWORD);
+    }
+
+    private String issued() {
+        return dispatcher.dispatchedNotifications().getLast().rawToken();
     }
 
     @Test
-    @DisplayName("requestReset generates token and sends notification")
-    void requestResetSuccess() {
-        UUID subjectId = UUID.randomUUID();
-        String email = "operator@exeris.eu";
+    @DisplayName("sends a reset token to the stored login and keeps only its hash")
+    void issuesToStoredLogin() {
+        recovery.requestReset("USER@exeris.eu");
 
-        recovery.requestReset(subjectId, email);
-
-        assertThat(notificationDispatcher.dispatchedNotifications()).hasSize(1);
-        InMemoryNotificationDispatcher.DispatchedNotification notification = notificationDispatcher.dispatchedNotifications().get(0);
-        assertThat(notification.type()).isEqualTo("PASSWORD_RESET");
-        assertThat(notification.subjectId()).isEqualTo(subjectId);
-        assertThat(notification.recipientEmail()).isEqualTo(email);
-        assertThat(notification.rawToken()).hasSize(32);
+        assertThat(dispatcher.dispatchedNotifications()).singleElement().satisfies(n -> {
+            assertThat(n.type()).isEqualTo("PASSWORD_RESET");
+            assertThat(n.recipientEmail()).isEqualTo(LOGIN);
+        });
+        assertThat(repository.resetTokens()).singleElement()
+                .satisfies(t -> assertThat(t.tokenHash()).isEqualTo(SingleUseHashedToken.hashToken(issued())));
     }
 
     @Test
-    @DisplayName("rapid second requestReset triggers TokenCooldownException")
-    void rapidSecondResetTriggersCooldown() {
-        UUID subjectId = UUID.randomUUID();
-        String email = "operator@exeris.eu";
+    @DisplayName("issues nothing, and says nothing, for an unknown login or inside the cooldown")
+    void silentRefusals() {
+        recovery.requestReset("nobody@exeris.eu");
+        assertThat(dispatcher.dispatchedNotifications()).isEmpty();
 
-        recovery.requestReset(subjectId, email);
-
-        assertThatThrownBy(() -> recovery.requestReset(subjectId, email))
-                .isInstanceOf(TokenCooldownException.class)
-                .satisfies(ex -> {
-                    TokenCooldownException ce = (TokenCooldownException) ex;
-                    assertThat(ce.remainingCooldown()).isPositive();
-                    assertThat(ce.remainingCooldown()).isLessThanOrEqualTo(Duration.ofSeconds(60));
-                });
+        recovery.requestReset(LOGIN);
+        recovery.requestReset(LOGIN);
+        assertThat(dispatcher.dispatchedNotifications()).hasSize(1);
     }
 
     @Test
-    @DisplayName("consumeReset updates password, clears lockout, bumps token_version, and revokes sessions")
-    void consumeResetSuccess() {
-        UUID subjectId = UUID.randomUUID();
-        String oldHash = passwordEncoder.encode("OldPassword123!".toCharArray());
-        repository.saveCredential(subjectId, oldHash, Instant.now());
-        repository.recordFailedLogin(subjectId, 5, Instant.now().plusSeconds(600), Instant.now());
-
-        assertThat(repository.getTokenVersion(subjectId)).isEqualTo(1L);
-
-        recovery.requestReset(subjectId, "user@exeris.eu");
-        String rawToken = notificationDispatcher.dispatchedNotifications().get(0).rawToken();
-
-        recovery.consumeReset(rawToken, "BrandNewPassword789!".toCharArray());
-
-        // Token version bumped
-        assertThat(repository.getTokenVersion(subjectId)).isEqualTo(2L);
-
-        // Lockout cleared
-        assertThat(repository.findCredential(subjectId).orElseThrow().lockedUntil()).isNull();
-        assertThat(repository.findCredential(subjectId).orElseThrow().failedLoginAttempts()).isZero();
-
-        // Active sessions revoked
-        assertThat(sessionStore.revokedSubjects()).containsExactly(subjectId);
-
-        // Old password invalid, new password matches
-        assertThat(passwordEncoder.matches("OldPassword123!".toCharArray(), repository.findCredential(subjectId).orElseThrow().passwordHash())).isFalse();
-        assertThat(passwordEncoder.matches("BrandNewPassword789!".toCharArray(), repository.findCredential(subjectId).orElseThrow().passwordHash())).isTrue();
-    }
-
-    @Test
-    @DisplayName("consumeReset with identical password throws SamePasswordException")
-    void consumeResetSamePasswordThrows() {
-        UUID subjectId = UUID.randomUUID();
-        String currentHash = passwordEncoder.encode("IdenticalPassword123!".toCharArray());
-        repository.saveCredential(subjectId, currentHash, Instant.now());
-
-        recovery.requestReset(subjectId, "user@exeris.eu");
-        String rawToken = notificationDispatcher.dispatchedNotifications().get(0).rawToken();
-
-        assertThatThrownBy(() -> recovery.consumeReset(rawToken, "IdenticalPassword123!".toCharArray()))
-                .isInstanceOf(SamePasswordException.class)
-                .hasMessageContaining("cannot be identical");
-
-        // Sessions should not have been revoked
-        assertThat(sessionStore.revokedSubjects()).isEmpty();
-    }
-
-    @Test
-    @DisplayName("double-spending reset token throws InvalidTokenException")
-    void doubleSpendingResetTokenThrows() {
-        UUID subjectId = UUID.randomUUID();
-        String currentHash = passwordEncoder.encode("Password123!".toCharArray());
-        repository.saveCredential(subjectId, currentHash, Instant.now());
-
-        recovery.requestReset(subjectId, "user@exeris.eu");
-        String rawToken = notificationDispatcher.dispatchedNotifications().get(0).rawToken();
-
-        recovery.consumeReset(rawToken, "NewPass1!".toCharArray());
-
-        assertThatThrownBy(() -> recovery.consumeReset(rawToken, "NewPass2!".toCharArray()))
-                .isInstanceOf(InvalidTokenException.class)
-                .hasMessageContaining("already been consumed");
-    }
-
-    @Test
-    @DisplayName("expired reset token throws InvalidTokenException")
-    void expiredResetTokenThrows() {
-        DefaultCredentialRecovery shortLived = new DefaultCredentialRecovery(
-                repository,
-                passwordEncoder,
-                throttler,
-                notificationDispatcher,
-                sessionStore,
-                null,
-                Duration.ofMillis(1),
-                Duration.ofMillis(1)
-        );
-
-        UUID subjectId = UUID.randomUUID();
-        String currentHash = passwordEncoder.encode("Password123!".toCharArray());
-        repository.saveCredential(subjectId, currentHash, Instant.now());
-
-        shortLived.requestReset(subjectId, "user@exeris.eu");
-        String rawToken = notificationDispatcher.dispatchedNotifications().get(0).rawToken();
-
-        try {
-            Thread.sleep(10);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+    @DisplayName("consuming a token sets the password, bumps the version, clears lockout, verifies and revokes sessions")
+    void consumes() {
+        for (int i = 0; i < lockout.maxAttempts(); i++) {
+            store.authenticate(LOGIN, "Wrong123!".toCharArray());
         }
+        recovery.requestReset(LOGIN);
 
-        assertThatThrownBy(() -> shortLived.consumeReset(rawToken, "NewPass!".toCharArray()))
-                .isInstanceOf(InvalidTokenException.class)
-                .hasMessageContaining("expired");
+        recovery.consumeReset(issued(), NEXT);
+
+        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
+        assertThat(store.isVerified(subject)).as("the token reached the address").isTrue();
+        assertThat(sessions.revokedSubjects()).containsExactly(subject);
+        assertThat(store.authenticate(LOGIN, PASSWORD).isInvalid()).isTrue();
+        assertThat(store.authenticate(LOGIN, NEXT).isSuccess()).isTrue();
     }
 
     @Test
-    @DisplayName("parameter validation rejects invalid inputs")
-    void parameterValidations() {
-        UUID subjectId = UUID.randomUUID();
+    @DisplayName("a token is single-use")
+    void singleUse() {
+        recovery.requestReset(LOGIN);
+        String token = issued();
+        recovery.consumeReset(token, NEXT);
 
-        assertThatThrownBy(() -> recovery.requestReset(null, "user@exeris.eu"))
-                .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> recovery.requestReset(subjectId, null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> recovery.requestReset(subjectId, "   "))
-                .isInstanceOf(IllegalArgumentException.class);
-
-        assertThatThrownBy(() -> recovery.consumeReset(null, "pass".toCharArray()))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> recovery.consumeReset("", "pass".toCharArray()))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> recovery.consumeReset("token", null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> recovery.consumeReset("token", new char[0]))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> recovery.consumeReset(token, "Another789!".toCharArray()))
+                .isInstanceOf(InvalidTokenException.class);
+        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
     }
 
     @Test
-    @DisplayName("consumeReset does not consume token if password encoding fails")
-    void tokenNotConsumedIfEncodingFails() {
-        // Create an encoder that fails on encode
-        eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder failingEncoder =
-                new eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder() {
-                    @Override
-                    public String encode(char[] raw) {
-                        throw new RuntimeException("Simulated KDF failure");
-                    }
+    @DisplayName("an expired token is refused and the password is unchanged")
+    void expired() {
+        recovery.requestReset(LOGIN);
+        clock.advance(tokens.resetValidity());
 
-                    @Override
-                    public boolean matches(char[] raw, String encoded) {
-                        return false;
-                    }
-                };
+        assertThatThrownBy(() -> recovery.consumeReset(issued(), NEXT)).isInstanceOf(InvalidTokenException.class);
+        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+    }
 
-        DefaultCredentialRecovery recoveryWithFailingEncoder = new DefaultCredentialRecovery(
-                repository,
-                failingEncoder,
-                throttler,
-                notificationDispatcher,
-                sessionStore,
-                null,
-                Duration.ofSeconds(60),
-                Duration.ofMinutes(15)
-        );
+    @Test
+    @DisplayName("a newer reset token supersedes the older one")
+    void superseded() {
+        recovery.requestReset(LOGIN);
+        String first = issued();
+        clock.advance(tokens.issueCooldown().plusSeconds(1));
+        recovery.requestReset(LOGIN);
 
-        UUID subjectId = UUID.randomUUID();
-        String existingHash = passwordEncoder.encode("ExistingPassword123!".toCharArray());
-        repository.saveCredential(subjectId, existingHash, Instant.now());
+        assertThatThrownBy(() -> recovery.consumeReset(first, NEXT)).isInstanceOf(InvalidTokenException.class);
+        recovery.consumeReset(issued(), NEXT);
+        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+    }
 
-        recovery.requestReset(subjectId, "user@exeris.eu");
-        String rawToken = notificationDispatcher.dispatchedNotifications().get(0).rawToken();
+    @Test
+    @DisplayName("a password change voids an outstanding reset token")
+    void changeVoidsResetToken() {
+        String verifyHash = "b".repeat(64);
+        Instant now = clock.instant();
+        repository.issueVerificationToken(UUID.randomUUID(), subject, verifyHash, now.plusSeconds(60), now, now.minusSeconds(60));
+        repository.consumeVerificationToken(verifyHash, now);
+        recovery.requestReset(LOGIN);
 
-        // Attempt consumeReset - should fail on encode
-        assertThatThrownBy(() -> recoveryWithFailingEncoder.consumeReset(rawToken, "NewPassword123!".toCharArray()))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessageContaining("Simulated KDF failure");
+        store.changePassword(subject, PASSWORD, NEXT);
 
-        // Token must still NOT be consumed!
-        String tokenHash = eu.exeris.caps.credentialstore.internal.crypto.SingleUseHashedToken.hashToken(rawToken);
-        assertThat(repository.findResetTokenByHash(tokenHash).orElseThrow().consumedAt()).isNull();
+        assertThatThrownBy(() -> recovery.consumeReset(issued(), "Another789!".toCharArray()))
+                .isInstanceOf(InvalidTokenException.class);
+    }
 
-        // Normal recovery can still consume the token
-        recovery.consumeReset(rawToken, "NewPassword123!".toCharArray());
-        assertThat(repository.findResetTokenByHash(tokenHash).orElseThrow().consumedAt()).isNotNull();
+    @Test
+    @DisplayName("the same password is refused and the token stays usable")
+    void samePasswordKeepsToken() {
+        recovery.requestReset(LOGIN);
+        String token = issued();
+
+        assertThatThrownBy(() -> recovery.consumeReset(token, PASSWORD.clone())).isInstanceOf(SamePasswordException.class);
+        recovery.consumeReset(token, NEXT);
+        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+    }
+
+    @Test
+    @DisplayName("a failed write leaves both the token and the password as they were")
+    void failedWriteRollsBack() {
+        recovery.requestReset(LOGIN);
+        String token = issued();
+        repository.failNextResetWrite();
+
+        assertThatThrownBy(() -> recovery.consumeReset(token, NEXT)).isInstanceOf(IllegalStateException.class);
+        assertThat(repository.resetTokens()).singleElement().satisfies(t -> assertThat(t.consumedAt()).isNull());
+        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(sessions.revokedSubjects()).isEmpty();
+
+        recovery.consumeReset(token, NEXT);
+        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+    }
+
+    @Test
+    @DisplayName("rejects blank and malformed arguments")
+    void rejectsMalformed() {
+        assertThatThrownBy(() -> recovery.requestReset(" ")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> recovery.consumeReset(null, NEXT)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> recovery.consumeReset("token", new char[0])).isInstanceOf(IllegalArgumentException.class);
     }
 }
