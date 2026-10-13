@@ -53,14 +53,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @CapabilityModule
 @CapabilityLifecycle
-@Provides(service = CredentialStore.class, version = "2.0.0")
-@Provides(service = AccountVerification.class, version = "2.0.0")
-@Provides(service = CredentialRecovery.class, version = "2.0.0")
-@Requires(service = NotificationDispatcher.class, versionRange = "[1.0.0,2.0.0)", optional = true)
+@Provides(service = CredentialStore.class, version = "0.1.0")
+@Provides(service = AccountVerification.class, version = "0.1.0")
+@Provides(service = CredentialRecovery.class, version = "0.1.0")
+@Requires(service = NotificationDispatcher.class, versionRange = "[0.1.0,0.2.0)", optional = true)
 @Requires(service = KernelPasswordEncoder.class, optional = true)
 @Requires(service = TransactionalExecutor.class, optional = true)
-@Requires(service = SessionStore.class, versionRange = "[1.0.0,2.0.0)", optional = true)
-@Requires(service = AuditLogSink.class, versionRange = "[1.0.0,2.0.0)", optional = true)
+@Requires(service = SessionStore.class, versionRange = "[0.1.0,0.2.0)", optional = true)
+@Requires(service = AuditLogSink.class, versionRange = "[0.1.0,0.2.0)", optional = true)
 public final class CredentialStoreModule implements CapabilityLifecycleHooks {
 
     /**
