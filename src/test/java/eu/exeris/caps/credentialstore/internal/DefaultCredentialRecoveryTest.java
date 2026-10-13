@@ -92,7 +92,7 @@ class DefaultCredentialRecoveryTest {
 
         recovery.consumeReset(issued(), NEXT);
 
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
         assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
         assertThat(store.isVerified(subject)).as("the token reached the address").isTrue();
         assertThat(sessions.revokedSubjects()).containsExactly(subject, subject);
@@ -110,7 +110,7 @@ class DefaultCredentialRecoveryTest {
 
         assertThatThrownBy(() -> recovery.consumeReset(token, another))
                 .isInstanceOf(InvalidTokenException.class);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test
@@ -121,7 +121,7 @@ class DefaultCredentialRecoveryTest {
 
         String token = issued();
         assertThatThrownBy(() -> recovery.consumeReset(token, NEXT)).isInstanceOf(InvalidTokenException.class);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(store.getTokenVersion(subject)).hasValue(1);
     }
 
     @Test
@@ -134,7 +134,7 @@ class DefaultCredentialRecoveryTest {
 
         assertThatThrownBy(() -> recovery.consumeReset(first, NEXT)).isInstanceOf(InvalidTokenException.class);
         recovery.consumeReset(issued(), NEXT);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test
@@ -163,7 +163,7 @@ class DefaultCredentialRecoveryTest {
         char[] samePassword = PASSWORD.clone();
         assertThatThrownBy(() -> recovery.consumeReset(token, samePassword)).isInstanceOf(SamePasswordException.class);
         recovery.consumeReset(token, NEXT);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test
@@ -175,11 +175,11 @@ class DefaultCredentialRecoveryTest {
 
         assertThatThrownBy(() -> recovery.consumeReset(token, NEXT)).isInstanceOf(IllegalStateException.class);
         assertThat(repository.resetTokens()).singleElement().satisfies(t -> assertThat(t.consumedAt()).isNull());
-        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(store.getTokenVersion(subject)).hasValue(1);
         assertThat(sessions.revokedSubjects()).as("the pre-write revocation only, no post-commit sweep").containsExactly(subject);
 
         recovery.consumeReset(token, NEXT);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test

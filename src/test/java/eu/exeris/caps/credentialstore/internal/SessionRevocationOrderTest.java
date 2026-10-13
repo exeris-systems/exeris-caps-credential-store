@@ -74,11 +74,11 @@ class SessionRevocationOrderTest {
                 .isInstanceOf(IllegalStateException.class);
 
         assertThat(repository.findBySubject(subject).orElseThrow().passwordHash()).isEqualTo(hash);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(store.getTokenVersion(subject)).hasValue(1);
         assertThat(sessions.attempts).hasSize(1);
 
         store.changePassword(subject, PASSWORD, NEXT);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
         assertThat(sessions.attempts).as("revoked before the write and again after it").hasSize(3);
     }
 
@@ -93,11 +93,11 @@ class SessionRevocationOrderTest {
         assertThatThrownBy(() -> recovery.consumeReset(token, NEXT)).isInstanceOf(IllegalStateException.class);
 
         assertThat(repository.findBySubject(subject).orElseThrow().passwordHash()).isEqualTo(hash);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(store.getTokenVersion(subject)).hasValue(1);
         assertThat(repository.resetTokens()).singleElement().satisfies(t -> assertThat(t.consumedAt()).isNull());
 
         recovery.consumeReset(token, NEXT);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test
@@ -113,7 +113,7 @@ class SessionRevocationOrderTest {
         lenient.changePassword(subject, PASSWORD, NEXT);
 
         assertThat(afterFirst.calls).isEqualTo(2);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test

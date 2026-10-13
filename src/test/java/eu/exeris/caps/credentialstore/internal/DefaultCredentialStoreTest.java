@@ -321,7 +321,7 @@ class DefaultCredentialStoreTest {
 
             store.changePassword(subject, PASSWORD, next);
 
-            assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+            assertThat(store.getTokenVersion(subject)).hasValue(2);
             assertThat(sessionStore.revokedSubjects()).containsExactly(subject, subject);
             assertThat(repository.resetTokens()).allSatisfy(t -> assertThat(t.consumedAt()).isNotNull());
             assertThat(store.authenticate(LOGIN, PASSWORD).isInvalid()).isTrue();
@@ -341,7 +341,7 @@ class DefaultCredentialStoreTest {
                     .isInstanceOf(AccountLockedException.class);
             assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, next))
                     .isInstanceOf(AccountLockedException.class);
-            assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+            assertThat(store.getTokenVersion(subject)).hasValue(1);
             assertThat(sessionStore.revokedSubjects()).isEmpty();
         }
 
@@ -353,7 +353,7 @@ class DefaultCredentialStoreTest {
             char[] samePassword = PASSWORD.clone();
             assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, samePassword))
                     .isInstanceOf(SamePasswordException.class);
-            assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+            assertThat(store.getTokenVersion(subject)).hasValue(1);
         }
 
         @Test
@@ -378,7 +378,7 @@ class DefaultCredentialStoreTest {
     @DisplayName("reads for a subject without a credential answer the defaults")
     void defaultsForUnknownSubject() {
         UUID subject = UUID.randomUUID();
-        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(store.getTokenVersion(subject)).as("unknown subject has no version, not version 1").isEmpty();
         assertThat(store.isVerified(subject)).isFalse();
         assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
     }

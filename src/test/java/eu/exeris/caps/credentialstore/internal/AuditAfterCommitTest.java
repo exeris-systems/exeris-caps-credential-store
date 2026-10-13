@@ -72,7 +72,7 @@ class AuditAfterCommitTest {
         recovery.requestReset(LOGIN);
         recovery.consumeReset(dispatcher.dispatchedNotifications().getLast().rawToken(), PASSWORD);
         assertThat(store.authenticate(LOGIN, PASSWORD).isSuccess()).isTrue();
-        assertThat(store.getTokenVersion(subject)).isEqualTo(3L);
+        assertThat(store.getTokenVersion(subject)).hasValue(3);
     }
 
     @Test

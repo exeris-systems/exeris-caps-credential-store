@@ -178,9 +178,11 @@ public final class DefaultCredentialStore implements CredentialStore {
     }
 
     @Override
-    public long getTokenVersion(UUID subjectId) {
+    public OptionalLong getTokenVersion(UUID subjectId) {
         Objects.requireNonNull(subjectId, "subjectId must not be null");
-        return repository.findBySubject(subjectId).map(CredentialRecord::tokenVersion).orElse(1L);
+        return repository.findBySubject(subjectId)
+                .map(r -> OptionalLong.of(r.tokenVersion()))
+                .orElseGet(OptionalLong::empty);
     }
 
     @Override

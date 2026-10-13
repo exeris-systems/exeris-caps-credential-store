@@ -126,6 +126,6 @@ class CredentialStoreModuleTest {
 
         assertThat(store.authenticate("user@exeris.eu", initialPassword).isInvalid()).isTrue();
         assertThat(store.authenticate("user@exeris.eu", newPassword).isSuccess()).isTrue();
-        assertThat(store.getTokenVersion(subjectId)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subjectId)).hasValue(2);
     }
 }

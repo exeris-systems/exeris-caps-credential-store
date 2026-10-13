@@ -7,6 +7,7 @@ import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
 import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
 import eu.exeris.caps.credentialstore.api.model.LockoutState;
 
+import java.util.OptionalLong;
 import java.util.UUID;
 
 /**
@@ -40,8 +41,10 @@ public interface CredentialStore {
      * @param password        initial password
      * @throws CredentialAlreadyExistsException if the subject or the login identifier already has a
      *                                          credential; nothing is written
-     * @throws IllegalArgumentException         if an argument is null, blank or empty, or the login
-     *                                          identifier is not an address
+     * @throws NullPointerException             if {@code subjectId} is null
+     * @throws IllegalArgumentException         if the login identifier is null, blank or not an address, or
+     *                                          the password is null, empty or outside the
+     *                                          {@code PasswordPolicy} window
      */
     void createCredential(UUID subjectId, String loginIdentifier, char[] password);
 
@@ -54,8 +57,8 @@ public interface CredentialStore {
      * @param loginIdentifier login identifier presented
      * @param password        candidate password
      * @return the outcome; {@code SUCCESS} carries the subject
-     * @throws IllegalArgumentException if an argument is null, blank or empty, or the login identifier is not
-     *                                  an address
+     * @throws IllegalArgumentException if the login identifier is null, blank or not an address, or the
+     *                                  password is null, empty or longer than the {@code PasswordPolicy} allows
      */
     CredentialVerificationResult authenticate(String loginIdentifier, char[] password);
 
@@ -66,7 +69,9 @@ public interface CredentialStore {
      * @param subjectId identity subject identifier
      * @param password  candidate password
      * @return the outcome
-     * @throws IllegalArgumentException if {@code subjectId} is null or {@code password} is null or empty
+     * @throws NullPointerException     if {@code subjectId} is null
+     * @throws IllegalArgumentException if {@code password} is null, empty or longer than the
+     *                                  {@code PasswordPolicy} allows
      */
     CredentialVerificationResult verifyCredential(UUID subjectId, char[] password);
 
@@ -89,11 +94,15 @@ public interface CredentialStore {
      *                                    match
      * @throws AccountLockedException     if the account is locked, or this failure locked it
      * @throws SamePasswordException      if the new password equals the current one
+     * @throws NullPointerException       if {@code subjectId} is null
+     * @throws IllegalArgumentException   if a password is null or empty, the current one is longer than the
+     *                                    {@code PasswordPolicy} allows, or the new one is outside its window
      */
     void changePassword(UUID subjectId, char[] currentPassword, char[] newPassword);
 
     /**
-     * Clears the failed-attempt count and any lockout; an administrative operation.
+     * Clears the failed-attempt count and any lockout; an administrative operation. The capability attaches
+     * no authorisation to it: the caller decides who may unlock an account.
      *
      * @param subjectId identity subject identifier
      */
@@ -104,9 +113,10 @@ public interface CredentialStore {
      * carrying an older version can be refused.
      *
      * @param subjectId identity subject identifier
-     * @return the current token version, {@code 1} for a subject without a credential
+     * @return the current token version; empty for a subject without a credential, so that a token for a
+     *         deleted or never-created subject cannot match a version
      */
-    long getTokenVersion(UUID subjectId);
+    OptionalLong getTokenVersion(UUID subjectId);
 
     /**
      * Returns whether the subject's login identifier is verified.
