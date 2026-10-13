@@ -1,6 +1,6 @@
 # exeris-caps-credential-store
 
-Password credentials as an Exeris capability. It provides `CredentialStore` (set, verify and change a password, with a lockout after repeated failures), `AccountVerification` (single-use, expiring email-verification tokens) and `CredentialRecovery` (password-reset tokens and their consumption). Tokens are stored hashed.
+Password credentials as an Exeris capability. It provides `CredentialStore` (create a credential, authenticate, change a password, with a lockout after repeated failures), `AccountVerification` (single-use, expiring tokens that verify a login's address) and `CredentialRecovery` (password-reset tokens and their consumption). Tokens are stored hashed.
 
 Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API is not stable and no artefact has been published.
 
@@ -8,15 +8,20 @@ Status: proof of concept, built against `exeris-kernel` 0.13.0-SNAPSHOT. The API
 
 - **Layer:** Layer 5 — Domain primitive (identity), in the Tier 2 capability map of [`high-level-architecture.md`](https://github.com/exeris-systems/exeris-docs/blob/main/high-level-architecture.md) §3.2.
 - **Depends on:** `exeris-kernel-spi`, `exeris-sdk-composition-lifecycle` and `exeris-caps-audit-trail`.
-- **Provides** (`@Provides`, all version 1.0.0): `CredentialStore`, `AccountVerification`, `CredentialRecovery`.
+- **Provides** (`@Provides`, all version 2.0.0): `CredentialStore`, `AccountVerification`, `CredentialRecovery`.
 - **Requires** (`@Requires`, each declared `optional = true`): `eu.exeris.caps.credentialstore.spi.NotificationDispatcher`, `eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder`, `eu.exeris.kernel.spi.persistence.TransactionalExecutor`, `eu.exeris.caps.credentialstore.spi.SessionStore`, `eu.exeris.caps.audittrail.api.AuditLogSink`.
 - **Wall (ADR-055):** `eu.exeris.caps.credentialstore.api` is the cross-cap surface; `eu.exeris.caps.credentialstore.internal` is private, and a sibling cap reaching into it fails the build. No Spring, servlet, Netty or reactive type may appear (ADR-006).
 
 Behaviour worth knowing before composing it:
 
-- Passwords are encoded with the kernel's `KernelPasswordEncoder`. When none is supplied the module looks for the kernel community Argon2id encoder on the classpath and fails if it is absent rather than falling back to a weaker one.
-- Storage is in memory unless a kernel `TransactionalExecutor` is supplied, in which case a PostgreSQL repository is used. The DDL is `src/main/resources/schema/credential-store-schema.sql`; nothing applies it automatically.
-- Delivering a verification or reset token, and revoking sessions on a password change, go through two interfaces this cap declares itself (`spi.NotificationDispatcher`, `spi.SessionStore`); in-memory implementations of both ship in that package.
+- **A password is written only with proof.** `createCredential` inserts a credential for a subject and a login identifier that have none, and throws `CredentialAlreadyExistsException` otherwise; `changePassword` needs the current password; `CredentialRecovery.consumeReset` needs a single-use reset token. Nothing sets the password of an existing credential without one of those, so a registration or an invitation for an address that already has an account cannot replace its password. The composing SKU answers `CredentialAlreadyExistsException` exactly as it answers a successful registration.
+- **The login identifier is the address.** It is stored with the credential (NFC, stripped, lower-cased, unique), and verification and reset tokens are sent only to it, never to an address the caller supplies. `issueVerification` and `requestReset` take the login and return without issuing anything for an unknown login, a verified account or a request inside the cooldown, so the caller answers every request alike.
+- **Sign-in is gated on verification.** A credential is created unverified. `authenticate` and `verifyCredential` return `SUCCESS`, `INVALID`, `LOCKED` or `UNVERIFIED`. An unknown login and a wrong password are both `INVALID` and both run the key derivation. `UNVERIFIED` is reported only after the password matched, so it tells nothing to a caller who does not know the password. `LOCKED` can only happen to an existing account, so a caller that must not confirm an account exists presents it as `INVALID`. Consuming a reset token also verifies the address, since the token reached it.
+- **Lockout is atomic.** Each password check reserves an attempt with one conditional `UPDATE` before the derivation runs, so concurrent guesses cannot exceed the limit. Failures count within a window. `LockoutPolicy.fromConfig` and `TokenPolicy.fromConfig` read the limits from kernel configuration (`caps.credential-store.lockout.max-attempts`, `.failure-window-seconds`, `.duration-seconds`; `caps.credential-store.token.verification-validity-seconds`, `.reset-validity-seconds`, `.issue-cooldown-seconds`); the defaults are 5 failures in 15 minutes, a 15-minute lockout, 24-hour verification and 15-minute reset tokens, and a 60-second cooldown.
+- **Hashing goes through the kernel `KernelPasswordEncoder`**, whose contract requires a constant-time comparison. The SKU supplies the implementation (ADR-099 obligation 6), normally the community `Argon2idPasswordEncoder`; the cap names no driver class and has no fallback encoder. An encoder that also implements `RehashablePasswordEncoder` has a legacy hash re-encoded on the next successful sign-in.
+- **Storage is PostgreSQL through the kernel Persistence SPI.** The composing SKU builds the module with its wiring constructor (a `TransactionalExecutor`, a `KernelPasswordEncoder`, a `NotificationDispatcher`, and optionally a `SessionStore` and an `AuditLogSink`) and applies `CredentialStoreModule.MIGRATIONS` before the first call; nothing applies them automatically. The instance the composition conductor creates through the no-arg constructor runs the lifecycle hooks only and hands out no service. There is no in-memory store.
+- **The tables are deployment-global.** A subject has one credential whatever tenants it belongs to (ADR-099 obligation 10), so the tables carry no `tenant_id` and no row-level-security policy. Tenant isolation (ADR-012) belongs to membership and role grants, which the multi-tenancy and rbac-policy capabilities own.
+- Delivering a token, and revoking sessions on a password change or reset, go through two interfaces this cap declares itself (`spi.NotificationDispatcher`, `spi.SessionStore`).
 
 ## Build & test
 
@@ -26,6 +31,8 @@ Requires JDK 25 and Maven 3.9+.
 mvn compile -Dexeris.codegen.skip=true   # pass 1 — the processor writes capability metadata
 mvn verify                               # pass 2 — generate cap-manifest.json, validate the graph, scan the Wall
 ```
+
+`PostgresCredentialRepositoryLiveIT` runs against PostgreSQL only when `EXERIS_TEST_PG_URL` (a JDBC URL), `EXERIS_TEST_PG_USER` and `EXERIS_TEST_PG_PASSWORD` are set, or the `exeris.test.pg.url`, `.user` and `.password` system properties; it creates and drops its own schema, and is skipped otherwise.
 
 Both passes are needed after a `clean`: `exeris:generate` runs before `compile`, and `compile` is when the processor writes the metadata it reads. `src/main/generated/java/cap-manifest.json` is committed, so a clean `git status` after `mvn verify` shows the manifest matches the declaration.
 
