@@ -1,0 +1,109 @@
+{
+  "schemaVersion" : 2,
+  "stamp" : {
+    "validated" : true,
+    "compositionVersion" : "0.0.0",
+    "contentBinding" : "sha256:cc814c49619708ab0fc0b8a4205a5669540a921c3f67b32039dd2113c7d37069"
+  },
+  "modules" : [
+    {
+      "name" : "CredentialStoreModule",
+      "packageName" : "eu.exeris.caps.credentialstore",
+      "qualifiedName" : "eu.exeris.caps.credentialstore.CredentialStoreModule",
+      "module" : {
+        "provides" : [
+          {
+            "service" : "eu.exeris.caps.credentialstore.api.CredentialStore",
+            "version" : "1.0.0"
+          },
+          {
+            "service" : "eu.exeris.caps.credentialstore.api.AccountVerification",
+            "version" : "1.0.0"
+          },
+          {
+            "service" : "eu.exeris.caps.credentialstore.api.CredentialRecovery",
+            "version" : "1.0.0"
+          }
+        ],
+        "requires" : [
+          {
+            "service" : "eu.exeris.caps.credentialstore.spi.NotificationDispatcher",
+            "versionRange" : "[1.0.0,2.0.0)",
+            "optional" : true
+          },
+          {
+            "service" : "eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder",
+            "optional" : true
+          },
+          {
+            "service" : "eu.exeris.kernel.spi.persistence.TransactionalExecutor",
+            "optional" : true
+          },
+          {
+            "service" : "eu.exeris.caps.credentialstore.spi.SessionStore",
+            "versionRange" : "[1.0.0,2.0.0)",
+            "optional" : true
+          },
+          {
+            "service" : "eu.exeris.caps.audittrail.api.AuditLogSink",
+            "versionRange" : "[1.0.0,2.0.0)",
+            "optional" : true
+          }
+        ],
+        "lifecycleOwner" : "eu.exeris.caps.credentialstore.CredentialStoreModule"
+      }
+    }
+  ],
+  "resolutions" : [
+    {
+      "module" : "eu.exeris.caps.credentialstore.CredentialStoreModule",
+      "service" : "eu.exeris.caps.audittrail.api.AuditLogSink",
+      "versionRange" : "[1.0.0,2.0.0)",
+      "optional" : true,
+      "satisfied" : false,
+      "providers" : [ ]
+    },
+    {
+      "module" : "eu.exeris.caps.credentialstore.CredentialStoreModule",
+      "service" : "eu.exeris.caps.credentialstore.spi.NotificationDispatcher",
+      "versionRange" : "[1.0.0,2.0.0)",
+      "optional" : true,
+      "satisfied" : false,
+      "providers" : [ ]
+    },
+    {
+      "module" : "eu.exeris.caps.credentialstore.CredentialStoreModule",
+      "service" : "eu.exeris.caps.credentialstore.spi.SessionStore",
+      "versionRange" : "[1.0.0,2.0.0)",
+      "optional" : true,
+      "satisfied" : false,
+      "providers" : [ ]
+    },
+    {
+      "module" : "eu.exeris.caps.credentialstore.CredentialStoreModule",
+      "service" : "eu.exeris.kernel.spi.persistence.TransactionalExecutor",
+      "versionRange" : null,
+      "optional" : true,
+      "satisfied" : false,
+      "providers" : [ ]
+    },
+    {
+      "module" : "eu.exeris.caps.credentialstore.CredentialStoreModule",
+      "service" : "eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder",
+      "versionRange" : null,
+      "optional" : true,
+      "satisfied" : false,
+      "providers" : [ ]
+    }
+  ],
+  "initOrder" : [
+    "eu.exeris.caps.credentialstore.CredentialStoreModule"
+  ],
+  "warnings" : [
+    "module eu.exeris.caps.credentialstore.CredentialStoreModule @Requires service eu.exeris.caps.audittrail.api.AuditLogSink version [1.0.0,2.0.0) but no @CapabilityModule provides it (optional — skipped)",
+    "module eu.exeris.caps.credentialstore.CredentialStoreModule @Requires service eu.exeris.caps.credentialstore.spi.NotificationDispatcher version [1.0.0,2.0.0) but no @CapabilityModule provides it (optional — skipped)",
+    "module eu.exeris.caps.credentialstore.CredentialStoreModule @Requires service eu.exeris.caps.credentialstore.spi.SessionStore version [1.0.0,2.0.0) but no @CapabilityModule provides it (optional — skipped)",
+    "module eu.exeris.caps.credentialstore.CredentialStoreModule @Requires service eu.exeris.kernel.spi.persistence.TransactionalExecutor but no @CapabilityModule provides it (optional — skipped)",
+    "module eu.exeris.caps.credentialstore.CredentialStoreModule @Requires service eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder but no @CapabilityModule provides it (optional — skipped)"
+  ]
+}
