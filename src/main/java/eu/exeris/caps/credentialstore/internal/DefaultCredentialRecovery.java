@@ -33,6 +33,8 @@ import java.util.UUID;
  */
 public final class DefaultCredentialRecovery implements CredentialRecovery {
 
+    private static final System.Logger LOG = System.getLogger(DefaultCredentialRecovery.class.getName());
+
     private final CredentialRepository repository;
     private final PasswordHashing hashing;
     private final NotificationDispatcher notificationDispatcher;
@@ -78,8 +80,15 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
         if (!issued) {
             return;
         }
-        notificationDispatcher.sendPasswordResetToken(subjectId, credential.get().loginIdentifier(), token.rawToken());
-        audit("RESET_REQUESTED", subjectId, Map.of());
+        boolean delivered = true;
+        try {
+            notificationDispatcher.sendPasswordResetToken(subjectId, credential.get().loginIdentifier(), token.rawToken());
+        } catch (RuntimeException e) {
+            delivered = false;
+            LOG.log(System.Logger.Level.WARNING,
+                    "password reset token for subject " + subjectId + " was not delivered: " + e.getClass().getName(), e);
+        }
+        audit("RESET_REQUESTED", subjectId, Map.of("delivered", delivered));
     }
 
     @Override

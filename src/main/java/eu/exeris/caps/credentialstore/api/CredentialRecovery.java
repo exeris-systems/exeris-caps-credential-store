@@ -17,9 +17,9 @@ public interface CredentialRecovery {
      * <p>Returns normally, without issuing anything, when the login is unknown or was sent a reset token
      * within the cooldown of the {@code TokenPolicy}. A failure of the notification dispatcher is logged and
      * does not reach the caller, so a known account does not answer differently from an unknown one; the
-     * token is then undelivered and the user may ask again once the cooldown has passed. The call does the
-     * same work in the same order for a known account only up to a point: a known account costs a write and a
-     * dispatch, so response time is not constant and must not be treated as a secret.
+     * token is then undelivered and the user may ask again once the cooldown
+     * has passed. Response time is not constant, because a known account costs a write and a dispatch, and
+     * must not be treated as a secret.
      *
      * @param loginIdentifier login identifier of the account
      * @throws IllegalArgumentException if {@code loginIdentifier} is null, blank or not an address

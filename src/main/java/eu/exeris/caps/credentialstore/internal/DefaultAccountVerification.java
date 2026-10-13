@@ -19,8 +19,14 @@ import java.util.UUID;
 /**
  * Default implementation of {@link AccountVerification}. A token is only ever sent to the login identifier
  * stored with the credential, never to an address the caller supplies.
+ *
+ * <p>{@link #issueVerification} returns the same way whether or not the account exists: a failure of the
+ * notification dispatcher is logged, not thrown, so it cannot be told apart from an unknown login by the
+ * caller. Response time still differs, because a known account costs a write and a dispatch.
  */
 public final class DefaultAccountVerification implements AccountVerification {
+
+    private static final System.Logger LOG = System.getLogger(DefaultAccountVerification.class.getName());
 
     private final CredentialRepository repository;
     private final NotificationDispatcher notificationDispatcher;
@@ -58,9 +64,16 @@ public final class DefaultAccountVerification implements AccountVerification {
         if (!issued) {
             return;
         }
-        notificationDispatcher.sendVerificationToken(subjectId, credential.get().loginIdentifier(), token.rawToken());
+        boolean delivered = true;
+        try {
+            notificationDispatcher.sendVerificationToken(subjectId, credential.get().loginIdentifier(), token.rawToken());
+        } catch (RuntimeException e) {
+            delivered = false;
+            LOG.log(System.Logger.Level.WARNING,
+                    "verification token for subject " + subjectId + " was not delivered: " + e.getClass().getName(), e);
+        }
         if (auditTrail != null) {
-            auditTrail.emit("VERIFICATION_ISSUED", subjectId, Map.of());
+            auditTrail.emit("VERIFICATION_ISSUED", subjectId, Map.of("delivered", delivered));
         }
     }
 
