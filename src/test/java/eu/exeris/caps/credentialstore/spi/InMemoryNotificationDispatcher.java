@@ -5,7 +5,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * Thread-safe in-memory test double and standalone default for {@link NotificationDispatcher}.
+ * Thread-safe in-memory test double for {@link NotificationDispatcher}.
  *
  * @since 0.1.0
  */

@@ -40,6 +40,34 @@ class CredentialStoreModuleTest {
     }
 
     @Test
+    @DisplayName("the conductor's no-arg instance hands out no service")
+    void noArgInstanceIsLifecycleOnly() {
+        CredentialStoreModule module = new CredentialStoreModule();
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(module::credentialStore)
+                .isInstanceOf(IllegalStateException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(module::accountVerification)
+                .isInstanceOf(IllegalStateException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(module::credentialRecovery)
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("the public wiring constructor refuses a missing executor, encoder or dispatcher")
+    void publicWiringRefusesMissingDependencies() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new CredentialStoreModule(
+                null, encoder(), eu.exeris.caps.credentialstore.api.model.LockoutPolicy.defaults(),
+                new InMemoryNotificationDispatcher(), null, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("tx");
+    }
+
+    private static eu.exeris.kernel.spi.security.credentials.KernelPasswordEncoder encoder() {
+        return new eu.exeris.kernel.community.security.Argon2idPasswordEncoder(
+                new eu.exeris.kernel.spi.security.credentials.PasswordEncoderConfig(8192, 1, 1, 16));
+    }
+
+    @Test
     @DisplayName("rejects null password encoder fail-closed per ADR-099")
     void failClosedWithoutPasswordEncoder() {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> new CredentialStoreModule(
