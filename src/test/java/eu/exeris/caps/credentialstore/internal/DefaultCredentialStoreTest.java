@@ -322,7 +322,7 @@ class DefaultCredentialStoreTest {
             store.changePassword(subject, PASSWORD, next);
 
             assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
-            assertThat(sessionStore.revokedSubjects()).containsExactly(subject);
+            assertThat(sessionStore.revokedSubjects()).containsExactly(subject, subject);
             assertThat(repository.resetTokens()).allSatisfy(t -> assertThat(t.consumedAt()).isNotNull());
             assertThat(store.authenticate(LOGIN, PASSWORD).isInvalid()).isTrue();
             assertThat(store.authenticate(LOGIN, next).isSuccess()).isTrue();

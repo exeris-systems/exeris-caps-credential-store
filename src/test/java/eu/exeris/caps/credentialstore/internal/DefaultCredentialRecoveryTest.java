@@ -95,7 +95,7 @@ class DefaultCredentialRecoveryTest {
         assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
         assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
         assertThat(store.isVerified(subject)).as("the token reached the address").isTrue();
-        assertThat(sessions.revokedSubjects()).containsExactly(subject);
+        assertThat(sessions.revokedSubjects()).containsExactly(subject, subject);
         assertThat(store.authenticate(LOGIN, PASSWORD).isInvalid()).isTrue();
         assertThat(store.authenticate(LOGIN, NEXT).isSuccess()).isTrue();
     }
@@ -176,7 +176,7 @@ class DefaultCredentialRecoveryTest {
         assertThatThrownBy(() -> recovery.consumeReset(token, NEXT)).isInstanceOf(IllegalStateException.class);
         assertThat(repository.resetTokens()).singleElement().satisfies(t -> assertThat(t.consumedAt()).isNull());
         assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
-        assertThat(sessions.revokedSubjects()).isEmpty();
+        assertThat(sessions.revokedSubjects()).as("the pre-write revocation only, no post-commit sweep").containsExactly(subject);
 
         recovery.consumeReset(token, NEXT);
         assertThat(store.getTokenVersion(subject)).isEqualTo(2L);

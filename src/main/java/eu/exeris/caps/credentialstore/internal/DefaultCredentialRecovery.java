@@ -26,14 +26,17 @@ import java.util.UUID;
  * Default implementation of {@link CredentialRecovery}.
  *
  * <p>The new hash is derived before the token is touched, and the token is consumed in the same transaction
- * that writes the hash, so a failure at any step leaves both the token and the password as they were.
+ * that writes the hash. The subject's sessions are revoked before that transaction (see
+ * {@link SessionRevocation}), so a failure of the session store, of the derivation or of the write leaves the
+ * token usable and the password as it was; a call that reports success has revoked every session that existed
+ * when it began.
  */
 public final class DefaultCredentialRecovery implements CredentialRecovery {
 
     private final CredentialRepository repository;
     private final PasswordHashing hashing;
     private final NotificationDispatcher notificationDispatcher;
-    private final SessionStore sessionStore;
+    private final SessionRevocation sessions;
     private final AuditTrailBridge auditTrail;
     private final TokenPolicy tokenPolicy;
     private final PasswordPolicy passwordPolicy;
@@ -52,7 +55,7 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
         this.repository = Objects.requireNonNull(repository, "repository must not be null");
         this.hashing = Objects.requireNonNull(hashing, "hashing must not be null");
         this.notificationDispatcher = Objects.requireNonNull(notificationDispatcher, "notificationDispatcher must not be null");
-        this.sessionStore = sessionStore;
+        this.sessions = new SessionRevocation(sessionStore);
         this.auditTrail = auditTrail;
         this.tokenPolicy = Objects.requireNonNull(tokenPolicy, "tokenPolicy must not be null");
         this.passwordPolicy = Objects.requireNonNull(passwordPolicy, "passwordPolicy must not be null");
@@ -99,13 +102,12 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
         }
         String newHash = hashing.encode(newPassword);
 
+        sessions.beforeWrite(token.subjectId());
         OptionalLong tokenVersion = repository.consumeResetToken(tokenHash, newHash, clock.instant());
         if (tokenVersion.isEmpty()) {
             throw invalidToken();
         }
-        if (sessionStore != null) {
-            sessionStore.revokeAllForSubject(token.subjectId());
-        }
+        sessions.afterWrite(token.subjectId());
         audit("PASSWORD_RESET", token.subjectId(), Map.of("tokenVersion", tokenVersion.getAsLong()));
     }
 

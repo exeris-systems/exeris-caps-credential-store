@@ -74,6 +74,12 @@ public interface CredentialStore {
      * Replaces the password after checking the current one, increments the token version, clears the lockout,
      * invalidates every outstanding reset token and revokes every session of the subject.
      *
+     * <p>Sessions are revoked <em>before</em> the new hash is written, and once more after the commit for a
+     * session opened in between. A session store that fails therefore fails the call with the password and
+     * the token version unchanged; a call that returns has revoked every session that existed when it began.
+     * Only the post-commit sweep is best effort: its failure is logged, and the incremented token version is
+     * what refuses the stragglers.
+     *
      * <p>A wrong current password counts as a failed attempt under the lockout policy.
      *
      * @param subjectId       identity subject identifier

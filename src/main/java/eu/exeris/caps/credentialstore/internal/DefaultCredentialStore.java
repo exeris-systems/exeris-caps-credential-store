@@ -30,6 +30,10 @@ import java.util.UUID;
  * the hash the reservation returned, so neither a concurrent burst of guesses nor a concurrent password
  * change can slip between the lockout decision and the comparison. An unknown login, and a refused
  * reservation, run a derivation too.
+ *
+ * <p>A password change revokes the subject's sessions before it writes the new hash (see
+ * {@link SessionRevocation}), so a session store that fails aborts the change with the password and the token
+ * version untouched.
  */
 public final class DefaultCredentialStore implements CredentialStore {
 
@@ -39,7 +43,7 @@ public final class DefaultCredentialStore implements CredentialStore {
     private final PasswordHashing hashing;
     private final LockoutPolicy lockoutPolicy;
     private final PasswordPolicy passwordPolicy;
-    private final SessionStore sessionStore;
+    private final SessionRevocation sessions;
     private final AuditTrailBridge auditTrail;
     private final Clock clock;
 
@@ -56,7 +60,7 @@ public final class DefaultCredentialStore implements CredentialStore {
         this.hashing = Objects.requireNonNull(hashing, "hashing must not be null");
         this.lockoutPolicy = Objects.requireNonNull(lockoutPolicy, "lockoutPolicy must not be null");
         this.passwordPolicy = Objects.requireNonNull(passwordPolicy, "passwordPolicy must not be null");
-        this.sessionStore = sessionStore;
+        this.sessions = new SessionRevocation(sessionStore);
         this.auditTrail = auditTrail;
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
@@ -157,13 +161,12 @@ public final class DefaultCredentialStore implements CredentialStore {
         }
 
         String newHash = hashing.encode(newPassword);
+        sessions.beforeWrite(subjectId);
         OptionalLong tokenVersion = repository.changePassword(subjectId, credential.passwordHash(), newHash, now);
         if (tokenVersion.isEmpty()) {
             throw new InvalidCredentialException("Current password does not match");
         }
-        if (sessionStore != null) {
-            sessionStore.revokeAllForSubject(subjectId);
-        }
+        sessions.afterWrite(subjectId);
         audit("PASSWORD_CHANGED", subjectId, Map.of("tokenVersion", tokenVersion.getAsLong()));
     }
 
