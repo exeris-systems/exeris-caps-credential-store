@@ -18,6 +18,9 @@ public final class PasswordHashing {
 
     private static final int DUMMY_PASSWORD_LENGTH = 32;
 
+    /** Shared across instances: {@link SecureRandom} is thread-safe and seeding it once is enough. */
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     private final KernelPasswordEncoder encoder;
     private final KdfConcurrencyThrottler throttler;
     private final String dummyHash;
@@ -62,10 +65,9 @@ public final class PasswordHashing {
     }
 
     private static char[] randomPassword() {
-        SecureRandom random = new SecureRandom();
         char[] chars = new char[DUMMY_PASSWORD_LENGTH];
         for (int i = 0; i < chars.length; i++) {
-            chars[i] = (char) ('!' + random.nextInt('~' - '!' + 1));
+            chars[i] = (char) ('!' + RANDOM.nextInt('~' - '!' + 1));
         }
         return chars;
     }
