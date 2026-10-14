@@ -86,7 +86,7 @@ public final class DefaultCredentialRecovery implements CredentialRecovery {
         } catch (RuntimeException e) {
             delivered = false;
             LOG.log(System.Logger.Level.WARNING,
-                    "password reset token for subject " + subjectId + " was not delivered: " + e.getClass().getName(), e);
+                    "password reset token for subject " + subjectId + " was not delivered: " + e.getClass().getName());
         }
         audit("RESET_REQUESTED", subjectId, Map.of("delivered", delivered));
     }

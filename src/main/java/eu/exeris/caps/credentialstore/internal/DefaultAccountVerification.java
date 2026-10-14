@@ -70,7 +70,7 @@ public final class DefaultAccountVerification implements AccountVerification {
         } catch (RuntimeException e) {
             delivered = false;
             LOG.log(System.Logger.Level.WARNING,
-                    "verification token for subject " + subjectId + " was not delivered: " + e.getClass().getName(), e);
+                    "verification token for subject " + subjectId + " was not delivered: " + e.getClass().getName());
         }
         if (auditTrail != null) {
             auditTrail.emit("VERIFICATION_ISSUED", subjectId, Map.of("delivered", delivered));
