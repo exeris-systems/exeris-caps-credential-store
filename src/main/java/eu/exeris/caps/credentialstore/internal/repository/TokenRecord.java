@@ -17,6 +17,8 @@ public record TokenRecord(
 ) {
 
     /**
+     * Tells whether the token can still be redeemed at the given instant.
+     *
      * @param now the current time
      * @return {@code true} if the token is neither consumed, superseded nor expired at {@code now}
      */

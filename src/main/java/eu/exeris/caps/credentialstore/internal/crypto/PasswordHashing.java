@@ -59,7 +59,7 @@ public final class PasswordHashing {
         matches(password, dummyHash);
     }
 
-    /** @return {@code true} if the encoder reports that {@code encoded} should be re-encoded */
+    /** Reports whether the encoder wants {@code encoded} re-encoded, for example after a cost change. */
     public boolean needsRehash(String encoded) {
         return encoder instanceof RehashablePasswordEncoder rehashable && rehashable.needsRehash(encoded);
     }
