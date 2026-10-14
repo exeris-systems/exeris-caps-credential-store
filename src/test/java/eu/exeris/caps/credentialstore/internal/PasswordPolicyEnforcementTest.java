@@ -58,9 +58,13 @@ class PasswordPolicyEnforcementTest {
     void createRefusesOutOfWindow() {
         int before = encoder.encodeCount();
 
-        assertThatThrownBy(() -> store.createCredential(UUID.randomUUID(), "a@exeris.eu", of(9)))
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        char[] tooShort = of(9);
+        char[] tooLong = of(33);
+        assertThatThrownBy(() -> store.createCredential(first, "a@exeris.eu", tooShort))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("at least 10");
-        assertThatThrownBy(() -> store.createCredential(UUID.randomUUID(), "b@exeris.eu", of(33)))
+        assertThatThrownBy(() -> store.createCredential(second, "b@exeris.eu", tooLong))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("at most 32");
 
         assertThat(encoder.encodeCount()).isEqualTo(before);
@@ -70,8 +74,13 @@ class PasswordPolicyEnforcementTest {
     @Test
     @DisplayName("the window's own bounds are accepted")
     void boundsAreInclusive() {
-        store.createCredential(UUID.randomUUID(), "min@exeris.eu", of(10));
-        store.createCredential(UUID.randomUUID(), "max@exeris.eu", of(32));
+        UUID minSubject = UUID.randomUUID();
+        UUID maxSubject = UUID.randomUUID();
+        store.createCredential(minSubject, "min@exeris.eu", of(10));
+        store.createCredential(maxSubject, "max@exeris.eu", of(32));
+
+        assertThat(repository.findByLoginIdentifier("min@exeris.eu")).isPresent();
+        assertThat(repository.findByLoginIdentifier("max@exeris.eu")).isPresent();
     }
 
     @Test
@@ -79,8 +88,10 @@ class PasswordPolicyEnforcementTest {
     void authenticateRefusesOversized() {
         int matches = encoder.matchCount();
 
-        assertThatThrownBy(() -> store.authenticate(LOGIN, of(33))).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> store.verifyCredential(subject, of(5000))).isInstanceOf(IllegalArgumentException.class);
+        char[] oversized = of(33);
+        char[] enormous = of(5000);
+        assertThatThrownBy(() -> store.authenticate(LOGIN, oversized)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.verifyCredential(subject, enormous)).isInstanceOf(IllegalArgumentException.class);
 
         assertThat(encoder.matchCount()).isEqualTo(matches);
         assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
@@ -96,14 +107,16 @@ class PasswordPolicyEnforcementTest {
     @DisplayName("changePassword and consumeReset refuse a new password outside the window and change nothing")
     void changeAndResetRefuseOutOfWindow() {
         String hash = repository.findBySubject(subject).orElseThrow().passwordHash();
-        assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, of(9)))
+        char[] tooShort = of(9);
+        char[] tooLong = of(33);
+        assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, tooShort))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, of(33)))
+        assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, tooLong))
                 .isInstanceOf(IllegalArgumentException.class);
 
         recovery.requestReset(LOGIN);
         String token = dispatcher.dispatchedNotifications().getLast().rawToken();
-        assertThatThrownBy(() -> recovery.consumeReset(token, of(9))).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> recovery.consumeReset(token, tooShort)).isInstanceOf(IllegalArgumentException.class);
 
         assertThat(repository.findBySubject(subject).orElseThrow().passwordHash()).isEqualTo(hash);
         recovery.consumeReset(token, "ValidNewPassword1".toCharArray());
