@@ -26,5 +26,5 @@ public interface AuditRecorder {
      * @param details    event metadata; never contains a password, a hash or a token
      * @param occurredAt the instant of the event, read from the capability's clock
      */
-    void record(String action, UUID subjectId, Map<String, Object> details, Instant occurredAt);
+    void recordEvent(String action, UUID subjectId, Map<String, Object> details, Instant occurredAt);
 }

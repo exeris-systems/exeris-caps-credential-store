@@ -110,7 +110,7 @@ class PostgresCredentialRepositoryLiveIT {
         boolean docker;
         try {
             docker = DockerClientFactory.instance().isDockerAvailable();
-        } catch (RuntimeException e) {
+        } catch (RuntimeException _) {
             docker = false;
         }
         if (!docker) {
@@ -372,9 +372,9 @@ class PostgresCredentialRepositoryLiveIT {
         assertThat(encoder.comparisons.get()).isEqualTo(POLICY.maxAttempts());
         assertThat(results).allSatisfy(r -> assertThat(r.isInvalid() || r.isLocked()).isTrue());
         assertThat(results.stream().filter(CredentialVerificationResult::isLocked).count()).isGreaterThanOrEqualTo(1);
-        CredentialRecord record = repository.findBySubject(subject).orElseThrow();
-        assertThat(record.failedLoginAttempts()).isEqualTo(POLICY.maxAttempts());
-        assertThat(record.lockedUntil()).isNotNull();
+        CredentialRecord stored = repository.findBySubject(subject).orElseThrow();
+        assertThat(stored.failedLoginAttempts()).isEqualTo(POLICY.maxAttempts());
+        assertThat(stored.lockedUntil()).isNotNull();
         assertThat(store.authenticate(login, "SecretPassword123!".toCharArray()).isLocked()).isTrue();
     }
 

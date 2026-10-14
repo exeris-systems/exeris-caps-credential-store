@@ -71,8 +71,9 @@ class CredentialStoreModuleTest {
         KernelPasswordEncoder encoder = encoder();
         LockoutPolicy lockout = LockoutPolicy.defaults();
         TokenPolicy tokens = TokenPolicy.defaults();
+        PasswordPolicy passwords = PasswordPolicy.defaults();
 
-        assertThatThrownBy(() -> new CredentialStoreModule(null, encoder, dispatcher, null, null, lockout, tokens, PasswordPolicy.defaults()))
+        assertThatThrownBy(() -> new CredentialStoreModule(null, encoder, dispatcher, null, null, lockout, tokens, passwords))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("tx");
         assertThatThrownBy(() -> wired(null, dispatcher, lockout, tokens))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("passwordEncoder");

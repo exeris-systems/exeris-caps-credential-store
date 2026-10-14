@@ -25,16 +25,19 @@ class RequestPathsDoNotLeakDeliveryTest {
     private static final class DownDispatcher implements NotificationDispatcher {
         int calls;
 
-        @Override
-        public void sendVerificationToken(UUID subjectId, String recipientEmail, String rawToken) {
+        private void reject(String recipientEmail) {
             calls++;
             throw new IllegalStateException("provider rejected " + recipientEmail);
         }
 
         @Override
+        public void sendVerificationToken(UUID subjectId, String recipientEmail, String rawToken) {
+            reject(recipientEmail);
+        }
+
+        @Override
         public void sendPasswordResetToken(UUID subjectId, String recipientEmail, String rawToken) {
-            calls++;
-            throw new IllegalStateException("provider rejected " + recipientEmail);
+            reject(recipientEmail);
         }
     }
 

@@ -36,7 +36,7 @@ public final class AuditTrailBridge {
      */
     public void emit(String action, UUID subjectId, Map<String, Object> details) {
         try {
-            recorder.record(action, subjectId, details, clock.instant());
+            recorder.recordEvent(action, subjectId, details, clock.instant());
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING,
                     "audit event " + action + " was not recorded: " + e.getClass().getName(), e);

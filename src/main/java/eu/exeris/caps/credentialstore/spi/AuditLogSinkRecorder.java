@@ -29,7 +29,7 @@ public final class AuditLogSinkRecorder implements AuditRecorder {
     }
 
     @Override
-    public void record(String action, UUID subjectId, Map<String, Object> details, Instant occurredAt) {
+    public void recordEvent(String action, UUID subjectId, Map<String, Object> details, Instant occurredAt) {
         sink.emit(AuditEvent.builder()
                 .action(action)
                 .resourceType("credential")

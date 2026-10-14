@@ -119,7 +119,8 @@ class SessionRevocationOrderTest {
     @Test
     @DisplayName("a wrong current password never reaches the session store")
     void wrongPasswordRevokesNothing() {
-        assertThatThrownBy(() -> store.changePassword(subject, "WrongPassword999".toCharArray(), NEXT))
+        char[] wrong = "WrongPassword999".toCharArray();
+        assertThatThrownBy(() -> store.changePassword(subject, wrong, NEXT))
                 .isInstanceOf(InvalidCredentialException.class);
 
         assertThat(sessions.attempts).isEmpty();
