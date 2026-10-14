@@ -85,6 +85,10 @@ public interface CredentialStore {
      * Only the post-commit sweep is best effort: its failure is logged, and the incremented token version is
      * what refuses the stragglers.
      *
+     * <p>Because the sessions are revoked before the compare-and-swap on the stored hash, a call that loses
+     * a race against a concurrent change of the same password fails with {@link InvalidCredentialException}
+     * after the sessions are already revoked. That fails safe: no session survives a failed change.
+     *
      * <p>A wrong current password counts as a failed attempt under the lockout policy.
      *
      * @param subjectId       identity subject identifier

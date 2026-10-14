@@ -37,6 +37,10 @@ public interface CredentialRecovery {
      * existed when it began. Only the second, post-commit sweep is best effort: its failure is logged and the
      * incremented token version is what refuses the stragglers.
      *
+     * <p>Because the sessions are revoked before the compare-and-swap that consumes the token, a call that
+     * loses a race against a concurrent use of the same token fails with {@link InvalidTokenException} after
+     * the sessions are already revoked. That fails safe: no session survives a failed reset.
+     *
      * @param rawToken    token as delivered
      * @param newPassword new password
      * @throws InvalidTokenException    if the token is unknown, expired, superseded or already consumed; the
