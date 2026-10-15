@@ -21,7 +21,10 @@ public interface AccountVerification {
      *
      * <p>Returns normally, without issuing anything, when the login is unknown, already verified, or was
      * sent a token within the cooldown of the {@code TokenPolicy}. The caller therefore answers every
-     * request alike, and the answer does not reveal whether an account exists.
+     * request alike, and the answer does not reveal whether an account exists. A failure of the notification
+     * dispatcher is logged and does not reach the caller, so it too is invisible; the token is then
+     * undelivered and the user may ask again once the cooldown has passed. Response time is not constant,
+     * because a known account costs a write and a dispatch, and must not be treated as a secret.
      *
      * @param loginIdentifier login identifier of the account
      * @throws IllegalArgumentException if {@code loginIdentifier} is null, blank or not an address

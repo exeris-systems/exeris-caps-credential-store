@@ -5,6 +5,7 @@ import eu.exeris.caps.credentialstore.api.CredentialRecovery;
 import eu.exeris.caps.credentialstore.api.CredentialStore;
 import eu.exeris.caps.credentialstore.api.exception.CredentialAlreadyExistsException;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
 import eu.exeris.caps.credentialstore.internal.repository.InMemoryCredentialRepository;
@@ -70,8 +71,9 @@ class CredentialStoreModuleTest {
         KernelPasswordEncoder encoder = encoder();
         LockoutPolicy lockout = LockoutPolicy.defaults();
         TokenPolicy tokens = TokenPolicy.defaults();
+        PasswordPolicy passwords = PasswordPolicy.defaults();
 
-        assertThatThrownBy(() -> new CredentialStoreModule(null, encoder, dispatcher, null, null, lockout, tokens))
+        assertThatThrownBy(() -> new CredentialStoreModule(null, encoder, dispatcher, null, null, lockout, tokens, passwords))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("tx");
         assertThatThrownBy(() -> wired(null, dispatcher, lockout, tokens))
                 .isInstanceOf(NullPointerException.class).hasMessageContaining("passwordEncoder");
@@ -93,7 +95,7 @@ class CredentialStoreModuleTest {
     private static CredentialStoreModule wired(KernelPasswordEncoder encoder, InMemoryNotificationDispatcher dispatcher,
                                                LockoutPolicy lockout, TokenPolicy tokens) {
         return new CredentialStoreModule(new InMemoryCredentialRepository(), encoder, new KdfConcurrencyThrottler(),
-                dispatcher, new InMemorySessionStore(), null, lockout, tokens, Clock.systemUTC());
+                dispatcher, new InMemorySessionStore(), null, lockout, tokens, PasswordPolicy.defaults(), Clock.systemUTC());
     }
 
     @Test
@@ -125,6 +127,6 @@ class CredentialStoreModuleTest {
 
         assertThat(store.authenticate("user@exeris.eu", initialPassword).isInvalid()).isTrue();
         assertThat(store.authenticate("user@exeris.eu", newPassword).isSuccess()).isTrue();
-        assertThat(store.getTokenVersion(subjectId)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subjectId)).hasValue(2);
     }
 }

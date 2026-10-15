@@ -27,6 +27,9 @@ jobs:
       # repository. PACKAGES_READ_TOKEN is a classic PAT with read:packages, set as a repository or
       # organisation secret. .github/maven-settings.xml is the only place it is used.
       PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
+      # The live PostgreSQL test starts a throw-away container through Testcontainers (ubuntu runners
+      # carry Docker). With this set it fails, instead of skipping, when it cannot get a database.
+      EXERIS_REQUIRE_LIVE_PG: 'true'
 
     steps:
       - name: Checkout exeris-caps-credential-store
@@ -113,6 +116,22 @@ jobs:
       - name: mvn verify (second pass — generates, validates, scans the Wall)
         working-directory: exeris-caps-credential-store
         run: mvn -B -ntp -s .github/maven-settings.xml verify
+
+      # A skipped test reports green. The lockout reservation and the token compare-and-swap statements
+      # are only ever executed by this class, so a run in which it did not execute is a failed run.
+      - name: Assert the live PostgreSQL test ran
+        working-directory: exeris-caps-credential-store
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          reports = glob.glob("target/surefire-reports/TEST-*PostgresCredentialRepositoryLiveIT.xml")
+          assert reports, "no surefire report for PostgresCredentialRepositoryLiveIT"
+          suite = ET.parse(reports[0]).getroot()
+          tests, skipped = int(suite.get("tests")), int(suite.get("skipped"))
+          assert tests >= 9, f"live test ran {tests} cases, expected at least 9"
+          assert skipped == 0, f"live test skipped {skipped} cases"
+          print(f"live PostgreSQL test OK: {tests} cases, none skipped")
+          PY
 
       - name: Assert the cap manifest was emitted and stamped
         working-directory: exeris-caps-credential-store

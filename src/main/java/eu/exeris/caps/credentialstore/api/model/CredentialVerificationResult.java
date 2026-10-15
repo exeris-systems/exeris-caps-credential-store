@@ -11,8 +11,8 @@ import java.util.UUID;
  * password it supplied proves:
  * <ul>
  *   <li>{@link Status#INVALID} — the login is unknown or the password is wrong. The two are not
- *       distinguished, and both run the key derivation, so neither the result nor its timing tells them
- *       apart.</li>
+ *       distinguished, and both run the key derivation, so the result is the same and the dominant cost
+ *       is the same; a known login adds a few cheap writes, so timing is not guaranteed identical.</li>
  *   <li>{@link Status#LOCKED} — the account is locked after repeated failures. Only an existing account can
  *       be locked, so this status confirms that the login exists; a caller that must not confirm it presents
  *       {@code LOCKED} as {@code INVALID}.</li>

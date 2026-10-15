@@ -6,6 +6,7 @@ import eu.exeris.caps.credentialstore.api.exception.InvalidCredentialException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
 import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
 import eu.exeris.caps.credentialstore.internal.repository.CredentialRecord;
@@ -51,7 +52,7 @@ class DefaultCredentialStoreTest {
         sessionStore = new InMemorySessionStore();
         policy = new LockoutPolicy(5, Duration.ofMinutes(15), Duration.ofMinutes(15));
         store = new DefaultCredentialStore(repository, new PasswordHashing(encoder, new KdfConcurrencyThrottler(4)),
-                policy, sessionStore, null, clock);
+                policy, PasswordPolicy.defaults(), sessionStore, null, clock);
     }
 
     private UUID verifiedAccount(String login, char[] password) {
@@ -320,8 +321,8 @@ class DefaultCredentialStoreTest {
 
             store.changePassword(subject, PASSWORD, next);
 
-            assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
-            assertThat(sessionStore.revokedSubjects()).containsExactly(subject);
+            assertThat(store.getTokenVersion(subject)).hasValue(2);
+            assertThat(sessionStore.revokedSubjects()).containsExactly(subject, subject);
             assertThat(repository.resetTokens()).allSatisfy(t -> assertThat(t.consumedAt()).isNotNull());
             assertThat(store.authenticate(LOGIN, PASSWORD).isInvalid()).isTrue();
             assertThat(store.authenticate(LOGIN, next).isSuccess()).isTrue();
@@ -340,7 +341,7 @@ class DefaultCredentialStoreTest {
                     .isInstanceOf(AccountLockedException.class);
             assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, next))
                     .isInstanceOf(AccountLockedException.class);
-            assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+            assertThat(store.getTokenVersion(subject)).hasValue(1);
             assertThat(sessionStore.revokedSubjects()).isEmpty();
         }
 
@@ -352,7 +353,7 @@ class DefaultCredentialStoreTest {
             char[] samePassword = PASSWORD.clone();
             assertThatThrownBy(() -> store.changePassword(subject, PASSWORD, samePassword))
                     .isInstanceOf(SamePasswordException.class);
-            assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+            assertThat(store.getTokenVersion(subject)).hasValue(1);
         }
 
         @Test
@@ -377,7 +378,7 @@ class DefaultCredentialStoreTest {
     @DisplayName("reads for a subject without a credential answer the defaults")
     void defaultsForUnknownSubject() {
         UUID subject = UUID.randomUUID();
-        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(store.getTokenVersion(subject)).as("unknown subject has no version, not version 1").isEmpty();
         assertThat(store.isVerified(subject)).isFalse();
         assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
     }
