@@ -41,6 +41,18 @@ public final class InMemoryCredentialRepository implements CredentialRepository 
     }
 
     @Override
+    public synchronized boolean insertVerifiedCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now) {
+        boolean taken = credentials.containsKey(subjectId)
+                || credentials.values().stream().anyMatch(r -> r.loginIdentifier().equals(loginIdentifier));
+        if (taken) {
+            return false;
+        }
+        credentials.put(subjectId, new CredentialRecord(subjectId, loginIdentifier, passwordHash, true, now,
+                0, null, null, 1L, now, now));
+        return true;
+    }
+
+    @Override
     public synchronized Optional<CredentialRecord> findBySubject(UUID subjectId) {
         return Optional.ofNullable(credentials.get(subjectId));
     }

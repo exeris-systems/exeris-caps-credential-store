@@ -24,6 +24,14 @@ public interface CredentialRepository {
      */
     boolean insertCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now);
 
+    /**
+     * Inserts a new credential already marked verified, without issuing a verification token.
+     *
+     * @return {@code true} if inserted; {@code false} if the subject or the login identifier already has a
+     *         credential, in which case nothing was written
+     */
+    boolean insertVerifiedCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now);
+
     Optional<CredentialRecord> findBySubject(UUID subjectId);
 
     Optional<CredentialRecord> findByLoginIdentifier(String loginIdentifier);

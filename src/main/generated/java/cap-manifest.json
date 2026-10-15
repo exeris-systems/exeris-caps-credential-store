@@ -3,7 +3,7 @@
   "stamp" : {
     "validated" : true,
     "compositionVersion" : "0.0.0",
-    "contentBinding" : "sha256:5fa49f14d287e7ec90a6401768535fd67ff50c290b9d89990b00aed27c75fd1e"
+    "contentBinding" : "sha256:e4f2c65c793d3b9875dc5df84209ca2e2105ba290b6dab8d4d837c1e44fcd2fd"
   },
   "modules" : [
     {
@@ -22,6 +22,10 @@
           },
           {
             "service" : "eu.exeris.caps.credentialstore.api.CredentialRecovery",
+            "version" : "0.1.0"
+          },
+          {
+            "service" : "eu.exeris.caps.credentialstore.api.CredentialProvisioning",
             "version" : "0.1.0"
           }
         ],

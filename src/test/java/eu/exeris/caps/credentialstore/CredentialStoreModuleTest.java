@@ -1,6 +1,7 @@
 package eu.exeris.caps.credentialstore;
 
 import eu.exeris.caps.credentialstore.api.AccountVerification;
+import eu.exeris.caps.credentialstore.api.CredentialProvisioning;
 import eu.exeris.caps.credentialstore.api.CredentialRecovery;
 import eu.exeris.caps.credentialstore.api.CredentialStore;
 import eu.exeris.caps.credentialstore.api.exception.CredentialAlreadyExistsException;
@@ -62,6 +63,7 @@ class CredentialStoreModuleTest {
         assertThatThrownBy(module::credentialStore).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(module::accountVerification).isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(module::credentialRecovery).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(module::credentialProvisioning).isInstanceOf(IllegalStateException.class);
     }
 
     @Test
@@ -128,5 +130,13 @@ class CredentialStoreModuleTest {
         assertThat(store.authenticate("user@exeris.eu", initialPassword).isInvalid()).isTrue();
         assertThat(store.authenticate("user@exeris.eu", newPassword).isSuccess()).isTrue();
         assertThat(store.getTokenVersion(subjectId)).hasValue(2);
+
+        CredentialProvisioning provisioning = module.credentialProvisioning();
+        UUID operatorId = UUID.randomUUID();
+        char[] operatorPassword = "OperatorPassword789!".toCharArray();
+        provisioning.provisionVerified(operatorId, "operator@exeris.eu", operatorPassword);
+
+        assertThat(store.authenticate("operator@exeris.eu", "OperatorPassword789!".toCharArray()).isSuccess()).isTrue();
+        assertThat(store.isVerified(operatorId)).isTrue();
     }
 }

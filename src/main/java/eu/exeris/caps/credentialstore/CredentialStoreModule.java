@@ -2,12 +2,14 @@ package eu.exeris.caps.credentialstore;
 
 import eu.exeris.caps.audittrail.api.AuditLogSink;
 import eu.exeris.caps.credentialstore.api.AccountVerification;
+import eu.exeris.caps.credentialstore.api.CredentialProvisioning;
 import eu.exeris.caps.credentialstore.api.CredentialRecovery;
 import eu.exeris.caps.credentialstore.api.CredentialStore;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
 import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.DefaultAccountVerification;
+import eu.exeris.caps.credentialstore.internal.DefaultCredentialProvisioning;
 import eu.exeris.caps.credentialstore.internal.DefaultCredentialRecovery;
 import eu.exeris.caps.credentialstore.internal.DefaultCredentialStore;
 import eu.exeris.caps.credentialstore.internal.audit.AuditTrailBridge;
@@ -40,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>{@link CredentialStore} (password management, Argon2id verification, lockout policy)</li>
  *   <li>{@link AccountVerification} (single-use, hashed, expiring email-verification tokens)</li>
  *   <li>{@link CredentialRecovery} (forgot password and reset flow)</li>
+ *   <li>{@link CredentialProvisioning} (verified credential provisioning for host bootstrap)</li>
  * </ul>
  *
  * <p>The composition conductor instantiates this class through its no-arg constructor to run the lifecycle
@@ -65,6 +68,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Provides(service = CredentialStore.class, version = "0.1.0")
 @Provides(service = AccountVerification.class, version = "0.1.0")
 @Provides(service = CredentialRecovery.class, version = "0.1.0")
+@Provides(service = CredentialProvisioning.class, version = "0.1.0")
 @Requires(service = NotificationDispatcher.class, versionRange = "[0.1.0,0.2.0)", optional = true)
 @Requires(service = KernelPasswordEncoder.class, optional = true)
 @Requires(service = TransactionalExecutor.class, optional = true)
@@ -82,6 +86,7 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
     private final CredentialStore credentialStore;
     private final AccountVerification accountVerification;
     private final CredentialRecovery credentialRecovery;
+    private final CredentialProvisioning credentialProvisioning;
 
     private final AtomicBoolean initialized = new AtomicBoolean(false);
     private final AtomicBoolean ready = new AtomicBoolean(false);
@@ -94,6 +99,7 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
         this.credentialStore = null;
         this.accountVerification = null;
         this.credentialRecovery = null;
+        this.credentialProvisioning = null;
     }
 
     /**
@@ -165,6 +171,8 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
                 repository, notificationDispatcher, auditTrail, tokenPolicy, clock);
         this.credentialRecovery = new DefaultCredentialRecovery(
                 repository, hashing, notificationDispatcher, sessionStore, auditTrail, tokenPolicy, passwordPolicy, clock);
+        this.credentialProvisioning = new DefaultCredentialProvisioning(
+                repository, hashing, passwordPolicy, auditTrail, clock);
     }
 
     public CredentialStore credentialStore() {
@@ -177,6 +185,10 @@ public final class CredentialStoreModule implements CapabilityLifecycleHooks {
 
     public CredentialRecovery credentialRecovery() {
         return wired(credentialRecovery);
+    }
+
+    public CredentialProvisioning credentialProvisioning() {
+        return wired(credentialProvisioning);
     }
 
     private static <T> T wired(T service) {

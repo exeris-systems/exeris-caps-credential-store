@@ -44,6 +44,7 @@ class PostgresCredentialRepositoryTest {
             assertThat(sql.toUpperCase(Locale.ROOT)).as(sql).doesNotContain("DO UPDATE");
         }
         assertThat(PostgresCredentialRepository.INSERT_CREDENTIAL).endsWith("ON CONFLICT DO NOTHING");
+        assertThat(PostgresCredentialRepository.INSERT_VERIFIED_CREDENTIAL).endsWith("ON CONFLICT DO NOTHING");
     }
 
     @Test

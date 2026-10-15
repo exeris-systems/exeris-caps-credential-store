@@ -9,8 +9,8 @@ last-verified: 2026-10-15
 
 # `exeris-caps-credential-store` — Roadmap
 
-This repository is a proof of concept. It provides `CredentialStore`, `AccountVerification` and
-`CredentialRecovery`, and [`README.md`](README.md) describes what they do. This file records what the
+This repository is a proof of concept. It provides `CredentialStore`, `AccountVerification`,
+`CredentialRecovery` and `CredentialProvisioning`, and [`README.md`](README.md) describes what they do. This file records what the
 proof of concept does not cover, read together with the code, and the pull request that closes a gap
 updates it.
 

@@ -35,6 +35,7 @@ class AuditAfterCommitTest {
     private DefaultCredentialStore store;
     private DefaultAccountVerification verification;
     private DefaultCredentialRecovery recovery;
+    private DefaultCredentialProvisioning provisioning;
 
     @BeforeEach
     void setUp() {
@@ -53,6 +54,7 @@ class AuditAfterCommitTest {
         store = new DefaultCredentialStore(repository, hashing, LockoutPolicy.defaults(), PasswordPolicy.defaults(), null, audit, clock);
         verification = new DefaultAccountVerification(repository, dispatcher, audit, tokens, clock);
         recovery = new DefaultCredentialRecovery(repository, hashing, dispatcher, null, audit, tokens, PasswordPolicy.defaults(), clock);
+        provisioning = new DefaultCredentialProvisioning(repository, hashing, PasswordPolicy.defaults(), audit, clock);
     }
 
     @Test
@@ -73,6 +75,11 @@ class AuditAfterCommitTest {
         recovery.consumeReset(dispatcher.dispatchedNotifications().getLast().rawToken(), PASSWORD);
         assertThat(store.authenticate(LOGIN, PASSWORD).isSuccess()).isTrue();
         assertThat(store.getTokenVersion(subject)).hasValue(3);
+
+        UUID bootstrapSubject = UUID.randomUUID();
+        char[] bootstrapPassword = "BootstrapPassword123!".toCharArray();
+        provisioning.provisionVerified(bootstrapSubject, "bootstrap@exeris.eu", bootstrapPassword);
+        assertThat(store.authenticate("bootstrap@exeris.eu", "BootstrapPassword123!".toCharArray()).isSuccess()).isTrue();
     }
 
     @Test
@@ -80,7 +87,9 @@ class AuditAfterCommitTest {
     void eventsUseTheInjectedClock() {
         failing = false;
         store.createCredential(UUID.randomUUID(), LOGIN, PASSWORD);
+        char[] bootstrapPassword = "BootstrapPassword123!".toCharArray();
+        provisioning.provisionVerified(UUID.randomUUID(), "bootstrap@exeris.eu", bootstrapPassword);
 
-        assertThat(recordedAt).containsExactly(clock.instant());
+        assertThat(recordedAt).containsExactly(clock.instant(), clock.instant());
     }
 }
