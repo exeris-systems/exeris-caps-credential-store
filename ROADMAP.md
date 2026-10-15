@@ -21,6 +21,12 @@ issue in the `0.1.0` milestone; a "Later" item has none until it is scheduled.
 
 ## Before 0.1.0
 
+No item. The first entry under "Later" is a design question that the proof of concept does not settle.
+
+---
+
+## Later
+
 ### A verified address carries the password of whoever created the credential
 
 `createCredential` needs no proof that the caller controls the login identifier, and `verifyAccount`
@@ -31,12 +37,8 @@ on verification; both hold, and the combination still leaves an account whose ve
 password belong to different people. The Identity SKU cannot close this from outside, because it cannot
 tell who verifies. The code is in `internal/DefaultAccountVerification.java` (`verifyAccount`) and
 `internal/repository/PostgresCredentialRepository.java` (`CONSUME_VERIFICATION_TOKEN`, `MARK_VERIFIED`);
-the rule for what verification does to the earlier password is open. Tracked in
-[#12](https://github.com/exeris-systems/exeris-caps-credential-store/issues/12).
-
----
-
-## Later
+the rule for what verification does to the earlier password is open, and it waits on a decision in the
+Identity SKU's design on who verifies and what verification discards.
 
 ### Credentials whose password is longer than the maximum
 
