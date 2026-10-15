@@ -13,10 +13,11 @@ import java.util.UUID;
 /**
  * Password credentials, one per subject, each bound to a unique login identifier.
  *
- * <p>A password is written in exactly three ways: {@link #createCredential} for a subject and a login that
- * have none, {@link #changePassword} with the current password, and
+ * <p>A password is written in exactly four ways: {@link #createCredential} for a subject and a login that
+ * have none, {@link CredentialProvisioning#provisionVerified} for the same case when the host bootstraps an
+ * account that must authenticate immediately, {@link #changePassword} with the current password, and
  * {@link CredentialRecovery#consumeReset} with a single-use reset token. No operation sets the password of
- * an existing credential without one of those proofs.
+ * an existing credential without one of the last two proofs.
  *
  * <p>The login identifier is the address that verification and reset tokens are sent to. It is compared
  * after Unicode NFC normalisation, stripping surrounding whitespace and lower-casing in {@code Locale.ROOT},
@@ -26,8 +27,9 @@ import java.util.UUID;
  * whatever tenants it is a member of, and tenant scope is applied to membership, not here.
  *
  * <p>Passwords are hashed by the kernel {@code KernelPasswordEncoder} the composition supplies, whose
- * contract requires a constant-time comparison. Every {@code char[]} argument is copied and the copy wiped;
- * the caller wipes its own array.
+ * contract requires a constant-time comparison. Every {@code char[]} argument of this interface is copied and
+ * the copy wiped; the caller wipes its own array. {@link CredentialProvisioning#provisionVerified} instead
+ * zeroes the caller's array itself.
  *
  * @since 0.1.0
  */
