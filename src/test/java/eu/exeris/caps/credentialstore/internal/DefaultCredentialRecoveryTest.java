@@ -3,6 +3,7 @@ package eu.exeris.caps.credentialstore.internal;
 import eu.exeris.caps.credentialstore.api.exception.InvalidTokenException;
 import eu.exeris.caps.credentialstore.api.exception.SamePasswordException;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
@@ -47,8 +48,8 @@ class DefaultCredentialRecoveryTest {
         tokens = new TokenPolicy(Duration.ofHours(24), Duration.ofMinutes(15), Duration.ofSeconds(60));
         lockout = LockoutPolicy.defaults();
         PasswordHashing hashing = new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(2));
-        store = new DefaultCredentialStore(repository, hashing, lockout, sessions, null, clock);
-        recovery = new DefaultCredentialRecovery(repository, hashing, dispatcher, sessions, null, tokens, clock);
+        store = new DefaultCredentialStore(repository, hashing, lockout, PasswordPolicy.defaults(), sessions, null, clock);
+        recovery = new DefaultCredentialRecovery(repository, hashing, dispatcher, sessions, null, tokens, PasswordPolicy.defaults(), clock);
         subject = UUID.randomUUID();
         store.createCredential(subject, LOGIN, PASSWORD);
     }
@@ -91,10 +92,10 @@ class DefaultCredentialRecoveryTest {
 
         recovery.consumeReset(issued(), NEXT);
 
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
         assertThat(store.getLockoutState(subject).failedAttempts()).isZero();
         assertThat(store.isVerified(subject)).as("the token reached the address").isTrue();
-        assertThat(sessions.revokedSubjects()).containsExactly(subject);
+        assertThat(sessions.revokedSubjects()).containsExactly(subject, subject);
         assertThat(store.authenticate(LOGIN, PASSWORD).isInvalid()).isTrue();
         assertThat(store.authenticate(LOGIN, NEXT).isSuccess()).isTrue();
     }
@@ -109,7 +110,7 @@ class DefaultCredentialRecoveryTest {
 
         assertThatThrownBy(() -> recovery.consumeReset(token, another))
                 .isInstanceOf(InvalidTokenException.class);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test
@@ -120,7 +121,7 @@ class DefaultCredentialRecoveryTest {
 
         String token = issued();
         assertThatThrownBy(() -> recovery.consumeReset(token, NEXT)).isInstanceOf(InvalidTokenException.class);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
+        assertThat(store.getTokenVersion(subject)).hasValue(1);
     }
 
     @Test
@@ -133,7 +134,7 @@ class DefaultCredentialRecoveryTest {
 
         assertThatThrownBy(() -> recovery.consumeReset(first, NEXT)).isInstanceOf(InvalidTokenException.class);
         recovery.consumeReset(issued(), NEXT);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test
@@ -162,7 +163,7 @@ class DefaultCredentialRecoveryTest {
         char[] samePassword = PASSWORD.clone();
         assertThatThrownBy(() -> recovery.consumeReset(token, samePassword)).isInstanceOf(SamePasswordException.class);
         recovery.consumeReset(token, NEXT);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test
@@ -174,11 +175,11 @@ class DefaultCredentialRecoveryTest {
 
         assertThatThrownBy(() -> recovery.consumeReset(token, NEXT)).isInstanceOf(IllegalStateException.class);
         assertThat(repository.resetTokens()).singleElement().satisfies(t -> assertThat(t.consumedAt()).isNull());
-        assertThat(store.getTokenVersion(subject)).isEqualTo(1L);
-        assertThat(sessions.revokedSubjects()).isEmpty();
+        assertThat(store.getTokenVersion(subject)).hasValue(1);
+        assertThat(sessions.revokedSubjects()).as("the pre-write revocation only, no post-commit sweep").containsExactly(subject);
 
         recovery.consumeReset(token, NEXT);
-        assertThat(store.getTokenVersion(subject)).isEqualTo(2L);
+        assertThat(store.getTokenVersion(subject)).hasValue(2);
     }
 
     @Test

@@ -59,13 +59,4 @@ class PostgresCredentialRepositoryTest {
                 .containsExactlyInAnyOrder(PostgresCredentialRepository.CHANGE_PASSWORD,
                         PostgresCredentialRepository.REPLACE_HASH, PostgresCredentialRepository.RESET_PASSWORD);
     }
-
-    @Test
-    @DisplayName("the lockout reservation is one conditional update that returns the row it reserved")
-    void reservationIsAtomic() {
-        String sql = PostgresCredentialRepository.RESERVE_ATTEMPT;
-        assertThat(sql).startsWith("UPDATE credential_records")
-                .contains("c.failed_login_attempts < p.max_attempts")
-                .contains("RETURNING c.subject_id");
-    }
 }

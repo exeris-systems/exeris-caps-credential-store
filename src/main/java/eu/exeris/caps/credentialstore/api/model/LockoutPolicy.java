@@ -64,10 +64,16 @@ public record LockoutPolicy(int maxAttempts, Duration failureWindow, Duration lo
         return Duration.ofSeconds(config.getLongOrDefault(key, fallback.toSeconds()));
     }
 
+    /** Longest duration any policy accepts; keeps instant arithmetic far from overflow. */
+    static final Duration MAX_DURATION = Duration.ofDays(3650);
+
     static void requirePositive(Duration value, String name) {
         Objects.requireNonNull(value, name + " must not be null");
         if (value.isNegative() || value.isZero()) {
             throw new IllegalArgumentException(name + " must be positive");
+        }
+        if (value.compareTo(MAX_DURATION) > 0) {
+            throw new IllegalArgumentException(name + " must not exceed " + MAX_DURATION.toDays() + " days");
         }
     }
 }

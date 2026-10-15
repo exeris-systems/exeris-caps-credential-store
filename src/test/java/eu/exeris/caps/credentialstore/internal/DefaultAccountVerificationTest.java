@@ -2,6 +2,7 @@ package eu.exeris.caps.credentialstore.internal;
 
 import eu.exeris.caps.credentialstore.api.exception.InvalidTokenException;
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
@@ -41,7 +42,7 @@ class DefaultAccountVerificationTest {
         tokens = new TokenPolicy(Duration.ofHours(24), Duration.ofMinutes(15), Duration.ofSeconds(60));
         store = new DefaultCredentialStore(repository,
                 new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(2)),
-                LockoutPolicy.defaults(), null, null, clock);
+                LockoutPolicy.defaults(), PasswordPolicy.defaults(), null, null, clock);
         verification = new DefaultAccountVerification(repository, dispatcher, null, tokens, clock);
         subject = UUID.randomUUID();
         store.createCredential(subject, LOGIN, PASSWORD);

@@ -7,7 +7,9 @@ import java.util.function.Supplier;
  * Throttles concurrent Argon2id KDF operations to prevent memory exhaustion (OOM) and CPU starvation
  * under heavy virtual thread traffic.
  *
- * <p>Limits concurrency to $2 \times \text{availableProcessors}$ by default.
+ * <p>Limits concurrency to {@code max(4, 2 * availableProcessors)} by default. {@link #execute} waits for a
+ * permit without a bound, so the caller bounds the queue (a connection limit or a rate limit in front of the
+ * sign-in endpoint).
  *
  * @since 0.1.0
  */
