@@ -5,9 +5,11 @@ import eu.exeris.caps.credentialstore.api.exception.CredentialAlreadyExistsExcep
 import eu.exeris.caps.credentialstore.api.model.LockoutPolicy;
 import eu.exeris.caps.credentialstore.api.model.CredentialVerificationResult;
 import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
+import eu.exeris.caps.credentialstore.api.model.ProvisionResult;
 import eu.exeris.caps.credentialstore.api.model.TokenPolicy;
 import eu.exeris.caps.credentialstore.internal.CountingPasswordEncoder;
 import eu.exeris.caps.credentialstore.internal.DefaultAccountVerification;
+import eu.exeris.caps.credentialstore.internal.DefaultCredentialProvisioning;
 import eu.exeris.caps.credentialstore.internal.DefaultCredentialStore;
 import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
 import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
@@ -332,6 +334,54 @@ class PostgresCredentialRepositoryLiveIT {
         assertThat(verification.verifyAccount(dispatcher.dispatchedNotifications().getFirst().rawToken())).isEqualTo(subject);
         assertThat(store.authenticate(login, pw).subjectId()).isEqualTo(subject);
         assertThat(store.authenticate(login, "Takeover123!".toCharArray()).isInvalid()).isTrue();
+    }
+
+    @Test
+    @DisplayName("insertVerified is insert-only and marks the credential verified immediately")
+    void insertVerifiedOnly() {
+        UUID subject = UUID.randomUUID();
+        String login = login();
+        Instant now = now();
+
+        assertThat(repository.insertVerifiedCredential(subject, login, "$argon2id$original", now)).isTrue();
+        assertThat(repository.insertVerifiedCredential(subject, login(), "$argon2id$intruder", now)).isFalse();
+        assertThat(repository.insertVerifiedCredential(UUID.randomUUID(), login, "$argon2id$intruder", now)).isFalse();
+
+        CredentialRecord credential = repository.findByLoginIdentifier(login).orElseThrow();
+        assertThat(credential.subjectId()).isEqualTo(subject);
+        assertThat(credential.passwordHash()).isEqualTo("$argon2id$original");
+        assertThat(credential.emailVerified()).isTrue();
+        assertThat(credential.verifiedAt()).isEqualTo(now);
+        assertThat(credential.tokenVersion()).isEqualTo(1L);
+        assertThat(repository.findBySubject(subject)).contains(credential);
+    }
+
+    @Test
+    @DisplayName("through the services: provision verified credential authenticates immediately without verification token")
+    void provisionVerifiedOverPostgres() {
+        PasswordHashing hashing = new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(4));
+        DefaultCredentialStore store = new DefaultCredentialStore(repository, hashing, POLICY, PasswordPolicy.defaults(), null, null, Clock.systemUTC());
+        DefaultCredentialProvisioning provisioning = new DefaultCredentialProvisioning(
+                repository, hashing, PasswordPolicy.defaults(), null, Clock.systemUTC());
+        UUID subject = UUID.randomUUID();
+        String login = login();
+        char[] pw = "BootstrapPassword123!".toCharArray();
+
+        ProvisionResult result = provisioning.provisionVerified(subject, login, pw);
+        assertThat(result.subjectId()).isEqualTo(subject);
+        assertThat(result.loginIdentifier()).isEqualTo(login);
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(pw).as("password array zeroed").containsOnly('\0');
+
+        char[] authPw = "BootstrapPassword123!".toCharArray();
+        CredentialVerificationResult auth = store.authenticate(login, authPw);
+        assertThat(auth.isSuccess()).isTrue();
+        assertThat(auth.subjectId()).isEqualTo(subject);
+
+        UUID intruder = UUID.randomUUID();
+        char[] takeoverPw = "Takeover123!".toCharArray();
+        assertThatThrownBy(() -> provisioning.provisionVerified(intruder, login.toUpperCase(java.util.Locale.ROOT), takeoverPw))
+                .isInstanceOf(CredentialAlreadyExistsException.class);
     }
 
     /** Counts comparisons against one stored hash, which is where a lockout budget is spent. */
