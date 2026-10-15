@@ -48,7 +48,7 @@ final class SessionRevocation {
             LOG.log(System.Logger.Level.ERROR,
                     "post-commit session sweep failed for a subject whose password changed; sessions opened "
                             + "during the change are not revoked, the incremented token version still refuses "
-                            + "their tokens: " + e.getClass().getName(), e);
+                            + "their tokens: " + e.getClass().getName());
         }
     }
 }

@@ -39,7 +39,7 @@ public final class AuditTrailBridge {
             recorder.recordEvent(action, subjectId, details, clock.instant());
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING,
-                    "audit event " + action + " was not recorded: " + e.getClass().getName(), e);
+                    "audit event " + action + " was not recorded: " + e.getClass().getName());
         }
     }
 }

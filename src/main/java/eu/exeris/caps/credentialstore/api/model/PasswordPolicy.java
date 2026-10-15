@@ -12,6 +12,10 @@ import java.util.Objects;
  * a multi-megabyte input is a denial-of-service lever. Length is counted in UTF-16 code units, the unit of a
  * {@code char[]}. No composition rule is imposed.
  *
+ * <p>Because the maximum also gates verification, a stored credential whose password is longer than the
+ * configured maximum can no longer authenticate; lowering the maximum below the length of an existing password,
+ * or importing hashes of longer passwords, needs a reset path for those subjects.
+ *
  * <p>{@link #fromConfig(ConfigProvider)} reads {@code min-length} and {@code max-length} under
  * {@value #PREFIX}; an absent key takes its {@link #defaults()} value and a value out of range is refused,
  * never corrected.
