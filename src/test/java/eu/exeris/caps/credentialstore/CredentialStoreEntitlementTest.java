@@ -1,5 +1,6 @@
 package eu.exeris.caps.credentialstore;
 
+import eu.exeris.kernel.spi.contract.EntitlementClass;
 import eu.exeris.kernel.spi.contract.EntitlementRequirement;
 import eu.exeris.kernel.tck.contract.AbstractEntitlementRequirementTck;
 import org.junit.jupiter.api.DisplayName;
@@ -34,5 +35,13 @@ class CredentialStoreEntitlementTest extends AbstractEntitlementRequirementTck {
     void requiresOnlyItsOwnCapability() {
         assertThat(new CredentialStoreEntitlement().requiredCapabilities()).containsExactly("exeris-caps-credential-store");
         assertThat(CredentialStoreEntitlement.CAPABILITY_ID).isEqualTo("exeris-caps-credential-store");
+    }
+
+    @Test
+    @DisplayName("entitlementClass() is COMMERCIAL and stable across calls")
+    void entitlementClassIsCommercialAndStable() {
+        CredentialStoreEntitlement entitlement = new CredentialStoreEntitlement();
+        assertThat(entitlement.entitlementClass()).isEqualTo(EntitlementClass.COMMERCIAL);
+        assertThat(entitlement.entitlementClass()).isSameAs(entitlement.entitlementClass());
     }
 }
