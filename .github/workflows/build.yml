@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
   build:
@@ -22,11 +21,6 @@ jobs:
         java: ['25', '26']
 
     env:
-      # exeris-kernel is resolved from GitHub Packages, which asks for a token even for a public
-      # package, and a repository's own GITHUB_TOKEN cannot read packages published by another
-      # repository. PACKAGES_READ_TOKEN is a classic PAT with read:packages, set as a repository or
-      # organisation secret. .github/maven-settings.xml is the only place it is used.
-      PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
       # The live PostgreSQL test starts a throw-away container through Testcontainers (ubuntu runners
       # carry Docker). With this set it fails, instead of skipping, when it cannot get a database.
       EXERIS_REQUIRE_LIVE_PG: 'true'
@@ -59,34 +53,27 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: maven
 
-      - name: Check that the package-read token is set
-        run: |
-          if [ -z "${PACKAGES_READ_TOKEN}" ]; then
-            echo "::error::PACKAGES_READ_TOKEN is not set, so exeris-kernel cannot be resolved from GitHub Packages"
-            exit 1
-          fi
-
       - name: Install exeris-caps-service-boundary-core to the local repository (two passes)
         working-directory: exeris-caps-service-boundary-core
         run: |
-          mvn -B -ntp -s $GITHUB_WORKSPACE/exeris-caps-credential-store/.github/maven-settings.xml compile -Dexeris.codegen.skip=true
-          mvn -B -ntp -s $GITHUB_WORKSPACE/exeris-caps-credential-store/.github/maven-settings.xml -DskipTests install
+          mvn -B -ntp compile -Dexeris.codegen.skip=true
+          mvn -B -ntp -DskipTests install
 
       - name: Install exeris-caps-audit-trail to the local repository (two passes)
         working-directory: exeris-caps-audit-trail
         run: |
-          mvn -B -ntp -s $GITHUB_WORKSPACE/exeris-caps-credential-store/.github/maven-settings.xml compile -Dexeris.codegen.skip=true
-          mvn -B -ntp -s $GITHUB_WORKSPACE/exeris-caps-credential-store/.github/maven-settings.xml -DskipTests install
+          mvn -B -ntp compile -Dexeris.codegen.skip=true
+          mvn -B -ntp -DskipTests install
 
       # Two passes, and the first is not redundant: exeris:generate runs at generate-sources, but the
       # processor writes the capability metadata it reads only during compile.
       - name: Seed capability metadata (first pass, codegen skipped)
         working-directory: exeris-caps-credential-store
-        run: mvn -B -ntp -s .github/maven-settings.xml compile -Dexeris.codegen.skip=true
+        run: mvn -B -ntp compile -Dexeris.codegen.skip=true
 
       - name: mvn verify (second pass — generates, validates, scans the Wall)
         working-directory: exeris-caps-credential-store
-        run: mvn -B -ntp -s .github/maven-settings.xml verify
+        run: mvn -B -ntp verify
 
       # A skipped test reports green. The lockout reservation and the token compare-and-swap statements
       # are only ever executed by this class, so a run in which it did not execute is a failed run.
