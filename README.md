@@ -52,7 +52,7 @@ mvn verify                               # pass 2 — generate cap-manifest.json
 
 Both passes are needed after a `clean`: `exeris:generate` runs before `compile`, and `compile` is when the processor writes the metadata it reads. `src/main/generated/java/cap-manifest.json` is committed, so a clean `git status` after `mvn verify` shows the manifest matches the declaration.
 
-`exeris-sdk` 0.13.3 and `exeris-tooling` 0.11.0 resolve from Maven Central, and `exeris-kernel` 0.13.1 is resolved from GitHub Packages, which needs a token with `read:packages`; the sibling `exeris-caps-service-boundary-core` and `exeris-caps-audit-trail` are built from source first. [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence, and [`.github/maven-settings.xml`](.github/maven-settings.xml) the repository configuration it uses.
+`exeris-kernel` 0.13.1, `exeris-sdk` 0.13.3 and `exeris-tooling` 0.11.0 resolve from Maven Central and need no token. The sibling `exeris-caps-service-boundary-core` and `exeris-caps-audit-trail` are built from source first; [`.github/workflows/build.yml`](.github/workflows/build.yml) is the exact sequence.
 
 ## Documentation
 

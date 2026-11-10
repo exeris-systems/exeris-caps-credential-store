@@ -4,7 +4,7 @@ type: roadmap
 visibility: public
 owning-repo: exeris-caps-credential-store
 status: active
-last-verified: 2026-10-15
+last-verified: 2026-11-10
 ---
 
 # `exeris-caps-credential-store` — Roadmap
@@ -60,8 +60,8 @@ All five `@Requires` edges are `optional = true`, among them `TransactionalExecu
 (`CredentialStoreModule.java`). The capability graph resolves edges between capability modules only, so a
 kernel SPI type cannot be a mandatory edge and the manifest understates what the capability needs to
 start. This waits on [exeris-tooling#409](https://github.com/exeris-systems/exeris-tooling/issues/409),
-which would let the resolver treat a kernel SPI type as satisfied by the kernel. The kernel's 0.13.0
-development branch publishes `KernelProviders.TRANSACTIONAL_EXECUTOR`
+which would let the resolver treat a kernel SPI type as satisfied by the kernel. The kernel's 0.13.1
+release publishes `KernelProviders.TRANSACTIONAL_EXECUTOR`
 (`exeris-kernel-spi/.../context/KernelProviders.java`); `initialize()` here does nothing, and taking the
 executor from it, instead of through the constructor, is not done. No `KernelPasswordEncoder` entry exists
 there, so the SKU keeps supplying the encoder.
