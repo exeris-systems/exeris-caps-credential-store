@@ -4,7 +4,7 @@ type: roadmap
 visibility: public
 owning-repo: exeris-caps-credential-store
 status: active
-last-verified: 2026-11-10
+last-verified: 2026-10-15
 ---
 
 # `exeris-caps-credential-store` — Roadmap
