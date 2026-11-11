@@ -49,6 +49,18 @@ public final class PostgresCredentialRepository implements CredentialRepository 
             "INSERT INTO credential_records (subject_id, login_identifier, password_hash, email_verified, verified_at, created_at, updated_at) "
             + "VALUES ($1, $2, $3, TRUE, $4, $5, $6) ON CONFLICT DO NOTHING";
 
+    /** True when row-level security is enabled or forced on the table; no row when the table is absent. */
+    static final String RLS_STATE =
+            "SELECT c.relrowsecurity OR c.relforcerowsecurity FROM pg_class c WHERE c.oid = to_regclass('credential_records')";
+
+    /**
+     * Conflicts with itself and with every row writer; plain reads are not blocked. Must be the first
+     * statement of the unit, before any read, so that no snapshot predates the lock.
+     */
+    static final String LOCK_FOR_FIRST = "LOCK TABLE credential_records IN SHARE ROW EXCLUSIVE MODE";
+
+    static final String ANY_CREDENTIAL = "SELECT EXISTS (SELECT 1 FROM credential_records)";
+
     static final String SELECT_BY_SUBJECT =
             "SELECT " + COLUMNS + " FROM credential_records WHERE subject_id = $1";
 
@@ -135,7 +147,7 @@ public final class PostgresCredentialRepository implements CredentialRepository 
 
     /** Every statement this repository issues. */
     static List<String> statements() {
-        return List.of(INSERT_CREDENTIAL, INSERT_VERIFIED_CREDENTIAL, SELECT_BY_SUBJECT, SELECT_BY_LOGIN, RESERVE_ATTEMPT, LOCK_IF_EXHAUSTED,
+        return List.of(INSERT_CREDENTIAL, INSERT_VERIFIED_CREDENTIAL, RLS_STATE, LOCK_FOR_FIRST, ANY_CREDENTIAL, SELECT_BY_SUBJECT, SELECT_BY_LOGIN, RESERVE_ATTEMPT, LOCK_IF_EXHAUSTED,
                 CLEAR_FAILURES, REPLACE_HASH, CHANGE_PASSWORD, LOCK_CREDENTIAL, RECENT_VERIFICATION_TOKEN,
                 SUPERSEDE_VERIFICATION_TOKENS, INSERT_VERIFICATION_TOKEN, CONSUME_VERIFICATION_TOKEN,
                 MARK_VERIFIED, RECENT_RESET_TOKEN, SUPERSEDE_RESET_TOKENS, INSERT_RESET_TOKEN, SELECT_RESET_TOKEN,
@@ -178,6 +190,49 @@ public final class PostgresCredentialRepository implements CredentialRepository 
                 inserted.set(stmt.executeUpdate());
             }
         });
+        return inserted.get() == 1L;
+    }
+
+    @Override
+    public boolean insertFirstVerifiedCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now) {
+        AtomicReference<Long> inserted = new AtomicReference<>(0L);
+        AtomicReference<Boolean> rowSecurity = new AtomicReference<>(Boolean.FALSE);
+        tx.executeManaged(conn -> {
+            inserted.set(0L);
+            rowSecurity.set(Boolean.FALSE);
+            // The lock comes first: LOCK TABLE takes no snapshot, so in a transaction this unit starts, the
+            // snapshot of a REPEATABLE READ or SERIALIZABLE transaction is fixed only by the reads below,
+            // after the lock is held. A read before the lock would let a waiter act on a stale snapshot.
+            // Locking does not consult row-level security; the check that follows refuses that case.
+            try (PersistenceStatement stmt = conn.prepare(LOCK_FOR_FIRST)) {
+                stmt.executeUpdate();
+            }
+            try (PersistenceStatement stmt = conn.prepare(RLS_STATE);
+                 QueryResult rs = stmt.executeQuery()) {
+                if (rs.next() && rs.row().getBoolean(0)) {
+                    rowSecurity.set(Boolean.TRUE);
+                    return;
+                }
+            }
+            try (PersistenceStatement stmt = conn.prepare(ANY_CREDENTIAL);
+                 QueryResult rs = stmt.executeQuery()) {
+                if (rs.next() && rs.row().getBoolean(0)) {
+                    return;
+                }
+            }
+            try (PersistenceStatement stmt = conn.prepare(INSERT_VERIFIED_CREDENTIAL)) {
+                stmt.bindUuid(0, subjectId)
+                    .bindString(1, loginIdentifier)
+                    .bindString(2, passwordHash)
+                    .bindInstant(3, now)
+                    .bindInstant(4, now)
+                    .bindInstant(5, now);
+                inserted.set(stmt.executeUpdate());
+            }
+        });
+        if (rowSecurity.get()) {
+            throw new IllegalStateException("credential_records is subject to row-level security");
+        }
         return inserted.get() == 1L;
     }
 

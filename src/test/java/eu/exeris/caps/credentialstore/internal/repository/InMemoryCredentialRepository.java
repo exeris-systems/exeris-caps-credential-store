@@ -53,6 +53,14 @@ public final class InMemoryCredentialRepository implements CredentialRepository 
     }
 
     @Override
+    public synchronized boolean insertFirstVerifiedCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now) {
+        if (!credentials.isEmpty()) {
+            return false;
+        }
+        return insertVerifiedCredential(subjectId, loginIdentifier, passwordHash, now);
+    }
+
+    @Override
     public synchronized Optional<CredentialRecord> findBySubject(UUID subjectId) {
         return Optional.ofNullable(credentials.get(subjectId));
     }

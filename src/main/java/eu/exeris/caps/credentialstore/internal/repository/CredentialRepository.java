@@ -32,6 +32,24 @@ public interface CredentialRepository {
      */
     boolean insertVerifiedCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now);
 
+    /**
+     * In one transaction, holding a lock that excludes every concurrent credential insert or update: inserts
+     * a credential already marked verified if the table holds none.
+     *
+     * <p>The table lock is the first statement of the unit, before any read. A transaction that this unit
+     * starts therefore takes its snapshot after the lock is held, at every isolation level. When the unit
+     * joins a transaction that already ran a query, the guarantee holds at {@code READ COMMITTED}, where each
+     * statement takes a new snapshot; at {@code REPEATABLE READ} or {@code SERIALIZABLE} the snapshot predates
+     * the lock and a concurrent first credential can go unseen, so the call must then be the first statement
+     * of that transaction. This is not detected.
+     *
+     * @return {@code true} if inserted; {@code false} if a credential existed, in which case nothing was
+     *         written
+     * @throws IllegalStateException if the table is subject to row-level security, so that "none exists"
+     *                               would not be a deployment-wide answer; nothing was written
+     */
+    boolean insertFirstVerifiedCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now);
+
     Optional<CredentialRecord> findBySubject(UUID subjectId);
 
     Optional<CredentialRecord> findByLoginIdentifier(String loginIdentifier);

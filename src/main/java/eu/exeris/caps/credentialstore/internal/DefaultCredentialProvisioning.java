@@ -12,6 +12,7 @@ import java.time.Clock;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -59,6 +60,28 @@ public final class DefaultCredentialProvisioning implements CredentialProvisioni
                 auditTrail.emit("CREDENTIAL_PROVISIONED", subjectId, Map.of());
             }
             return new ProvisionResult(subjectId, login);
+        } finally {
+            if (password != null) {
+                Arrays.fill(password, '\0');
+            }
+        }
+    }
+
+    @Override
+    public Optional<ProvisionResult> provisionFirstVerified(UUID subjectId, String loginIdentifier, char[] password) {
+        try {
+            Objects.requireNonNull(subjectId, "subjectId must not be null");
+            String login = LoginIdentifiers.normalize(loginIdentifier);
+            DefaultCredentialStore.requireNewPassword(passwordPolicy, password, PASSWORD_PARAM);
+
+            String hash = hashing.encode(password);
+            if (!repository.insertFirstVerifiedCredential(subjectId, login, hash, clock.instant())) {
+                return Optional.empty();
+            }
+            if (auditTrail != null) {
+                auditTrail.emit("CREDENTIAL_PROVISIONED", subjectId, Map.of());
+            }
+            return Optional.of(new ProvisionResult(subjectId, login));
         } finally {
             if (password != null) {
                 Arrays.fill(password, '\0');
