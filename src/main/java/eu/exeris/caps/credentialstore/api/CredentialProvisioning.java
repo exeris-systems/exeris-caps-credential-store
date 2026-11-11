@@ -18,8 +18,8 @@ import java.util.UUID;
  * The capability cannot check this precondition and does not try to.
  *
  * <p>It must never serve unauthenticated self-service sign-up, where nothing has proven control of the
- * address. That path is {@link CredentialStore#createCredential}, which creates an unverified credential and
- * issues a verification token.
+ * address. That path is {@link CredentialStore#createCredential}, which creates an unverified credential;
+ * the host then calls {@link AccountVerification#issueVerification} to send the verification token.
  *
  * @since 0.1.0
  */
