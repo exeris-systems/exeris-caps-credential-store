@@ -46,6 +46,14 @@ public interface CredentialProvisioning {
      * authentication are not blocked. Under a joining executor the lock is held until the host's enclosing
      * transaction ends, so work the host does afterwards commits or rolls back together with the credential.
      *
+     * <p>The lock is acquired before the call reads anything. Under a joining executor the isolation level of
+     * the host's transaction decides whether that suffices: at {@code READ COMMITTED} the call may follow
+     * earlier reads, because every statement takes a new snapshot; at {@code REPEATABLE READ} or
+     * {@code SERIALIZABLE} the transaction's snapshot is fixed by its first query, so the call must be the
+     * first statement of the transaction, or a caller that waited for the lock can read a snapshot older than
+     * the winner's commit and provision a second first credential. The capability cannot detect a violation
+     * and does not refuse it.
+     *
      * <p>Call this before any other write to the credential table in the same transaction, so two callers
      * cannot each hold a row lock and wait to upgrade it. The database role needs the privilege that
      * {@code LOCK TABLE} requires in this mode, which any role that updates credentials already has.

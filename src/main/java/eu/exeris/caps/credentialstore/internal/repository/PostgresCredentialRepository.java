@@ -53,7 +53,10 @@ public final class PostgresCredentialRepository implements CredentialRepository 
     static final String RLS_STATE =
             "SELECT c.relrowsecurity OR c.relforcerowsecurity FROM pg_class c WHERE c.oid = to_regclass('credential_records')";
 
-    /** Conflicts with itself and with every row writer; plain reads are not blocked. */
+    /**
+     * Conflicts with itself and with every row writer; plain reads are not blocked. Must be the first
+     * statement of the unit, before any read, so that no snapshot predates the lock.
+     */
     static final String LOCK_FOR_FIRST = "LOCK TABLE credential_records IN SHARE ROW EXCLUSIVE MODE";
 
     static final String ANY_CREDENTIAL = "SELECT EXISTS (SELECT 1 FROM credential_records)";
@@ -197,15 +200,19 @@ public final class PostgresCredentialRepository implements CredentialRepository 
         tx.executeManaged(conn -> {
             inserted.set(0L);
             rowSecurity.set(Boolean.FALSE);
+            // The lock comes first: LOCK TABLE takes no snapshot, so in a transaction this unit starts, the
+            // snapshot of a REPEATABLE READ or SERIALIZABLE transaction is fixed only by the reads below,
+            // after the lock is held. A read before the lock would let a waiter act on a stale snapshot.
+            // Locking does not consult row-level security; the check that follows refuses that case.
+            try (PersistenceStatement stmt = conn.prepare(LOCK_FOR_FIRST)) {
+                stmt.executeUpdate();
+            }
             try (PersistenceStatement stmt = conn.prepare(RLS_STATE);
                  QueryResult rs = stmt.executeQuery()) {
                 if (rs.next() && rs.row().getBoolean(0)) {
                     rowSecurity.set(Boolean.TRUE);
                     return;
                 }
-            }
-            try (PersistenceStatement stmt = conn.prepare(LOCK_FOR_FIRST)) {
-                stmt.executeUpdate();
             }
             try (PersistenceStatement stmt = conn.prepare(ANY_CREDENTIAL);
                  QueryResult rs = stmt.executeQuery()) {
