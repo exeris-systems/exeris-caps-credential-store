@@ -14,8 +14,8 @@ import java.util.UUID;
  * Password credentials, one per subject, each bound to a unique login identifier.
  *
  * <p>A password is written in exactly four ways: {@link #createCredential} for a subject and a login that
- * have none, {@link CredentialProvisioning#provisionVerified} for the same case when the host bootstraps an
- * account that must authenticate immediately, {@link #changePassword} with the current password, and
+ * have none, {@link CredentialProvisioning#provisionVerified} for the same case when the host has already
+ * established ownership of the address and the account must authenticate immediately, {@link #changePassword} with the current password, and
  * {@link CredentialRecovery#consumeReset} with a single-use reset token. No operation sets the password of
  * an existing credential without one of the last two proofs.
  *

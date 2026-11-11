@@ -7,11 +7,19 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Administrative provisioning of verified credentials for host bootstrap.
+ * Administrative provisioning of verified credentials by a host that has already established ownership of
+ * the login address.
  *
- * <p>A host bootstrapping its first operator account uses this service to create a credential that can
- * authenticate immediately, bypassing account verification by design. It must not be used for regular user
- * registration or self-service sign-up.
+ * <p>This service creates a credential that can authenticate immediately, with no verification token,
+ * bypassing account verification by design. The host takes responsibility for the precondition: it has
+ * established, by its own means, that the caller controls the login address and is entitled to the account.
+ * Examples are a first-account bootstrap run by the operator of the deployment, and the acceptance of an
+ * invitation whose single-use token was delivered to that address and is consumed in the same transaction.
+ * The capability cannot check this precondition and does not try to.
+ *
+ * <p>It must never serve unauthenticated self-service sign-up, where nothing has proven control of the
+ * address. That path is {@link CredentialStore#createCredential}, which creates an unverified credential and
+ * issues a verification token.
  *
  * @since 0.1.0
  */
@@ -20,6 +28,11 @@ public interface CredentialProvisioning {
     /**
      * Provisions a verified credential for a new account in one transaction, without issuing a verification
      * token.
+     *
+     * <p>The caller must already have established that the requester controls {@code loginIdentifier} and is
+     * entitled to the account; the credential can authenticate as soon as this method returns. The
+     * capability cannot verify that, so a caller that has not established it creates a sign-in for an address
+     * nobody has proven to own. Use {@link CredentialStore#createCredential} when it has not.
      *
      * <p>The provided {@code password} array is zeroed upon return.
      *
