@@ -32,6 +32,17 @@ public interface CredentialRepository {
      */
     boolean insertVerifiedCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now);
 
+    /**
+     * In one transaction, holding a lock that excludes every concurrent credential insert or update: inserts
+     * a credential already marked verified if the table holds none.
+     *
+     * @return {@code true} if inserted; {@code false} if a credential existed, in which case nothing was
+     *         written
+     * @throws IllegalStateException if the table is subject to row-level security, so that "none exists"
+     *                               would not be a deployment-wide answer; nothing was written
+     */
+    boolean insertFirstVerifiedCredential(UUID subjectId, String loginIdentifier, String passwordHash, Instant now);
+
     Optional<CredentialRecord> findBySubject(UUID subjectId);
 
     Optional<CredentialRecord> findByLoginIdentifier(String loginIdentifier);
