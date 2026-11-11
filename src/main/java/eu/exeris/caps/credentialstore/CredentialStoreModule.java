@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>{@link CredentialStore} (password management, Argon2id verification, lockout policy)</li>
  *   <li>{@link AccountVerification} (single-use, hashed, expiring email-verification tokens)</li>
  *   <li>{@link CredentialRecovery} (forgot password and reset flow)</li>
- *   <li>{@link CredentialProvisioning} (verified credential provisioning for host bootstrap)</li>
+ *   <li>{@link CredentialProvisioning} (verified credential provisioning for a host that has already established ownership of the address)</li>
  * </ul>
  *
  * <p>The composition conductor instantiates this class through its no-arg constructor to run the lifecycle
