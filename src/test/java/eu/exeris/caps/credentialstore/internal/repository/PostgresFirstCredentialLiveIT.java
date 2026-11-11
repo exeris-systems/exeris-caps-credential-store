@@ -600,7 +600,7 @@ class PostgresFirstCredentialLiveIT {
     }
 
     @Test
-    @DisplayName("row-level security, enabled or forced, is refused with IllegalStateException and nothing is written")
+    @DisplayName("row-level security, enabled or forced, is refused with IllegalStateException; nothing is written and no lock is left")
     void rowLevelSecurityRefused() throws Exception {
         for (String schema : List.of(RLS_ENABLED, RLS_FORCED)) {
             DefaultCredentialProvisioning secured =
@@ -612,6 +612,11 @@ class PostgresFirstCredentialLiveIT {
 
             assertThat(pw).as(schema).containsOnly('\0');
             assertThat(count(schema)).as(schema).isZero();
+            try (Connection conn = open(schema); Statement stmt = conn.createStatement()) {
+                conn.setAutoCommit(false);
+                stmt.execute("LOCK TABLE credential_records IN SHARE ROW EXCLUSIVE MODE NOWAIT");
+                conn.rollback();
+            }
         }
     }
 

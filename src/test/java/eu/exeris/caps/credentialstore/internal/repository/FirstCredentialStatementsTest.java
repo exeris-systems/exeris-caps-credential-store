@@ -1,10 +1,25 @@
 package eu.exeris.caps.credentialstore.internal.repository;
 
 import eu.exeris.caps.credentialstore.api.CredentialProvisioning;
+import eu.exeris.caps.credentialstore.api.model.PasswordPolicy;
+import eu.exeris.caps.credentialstore.internal.CountingPasswordEncoder;
+import eu.exeris.caps.credentialstore.internal.DefaultCredentialProvisioning;
+import eu.exeris.caps.credentialstore.internal.crypto.KdfConcurrencyThrottler;
+import eu.exeris.caps.credentialstore.internal.crypto.PasswordHashing;
+import eu.exeris.kernel.spi.persistence.PersistenceConnection;
+import eu.exeris.kernel.spi.persistence.PersistenceStatement;
+import eu.exeris.kernel.spi.persistence.QueryResult;
+import eu.exeris.kernel.spi.persistence.TransactionIsolation;
+import eu.exeris.kernel.spi.persistence.TransactionalExecutor;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.time.Clock;
+import java.util.ArrayList;
+import java.util.UUID;
+import java.util.function.Function;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -105,5 +120,79 @@ class FirstCredentialStatementsTest {
         }
         assertThat(declared).containsExactlyInAnyOrder("CredentialStore@0.1.0", "AccountVerification@0.1.0",
                 "CredentialRecovery@0.1.0", "CredentialProvisioning@0.1.0");
+    }
+
+    @Test
+    @DisplayName("the first statement the unit executes is the table lock; the insert comes last")
+    void lockIsTheFirstStatementOfTheUnit() {
+        List<String> executed = new ArrayList<>();
+        TransactionalExecutor recording = new TransactionalExecutor() {
+            @Override
+            public void execute(TransactionalWork work) {
+                executeManaged(work);
+            }
+
+            @Override
+            public void executeManaged(TransactionalWork work) {
+                work.run(recordingConnection(executed));
+            }
+
+            @Override
+            public void executeManaged(TransactionIsolation isolation, boolean readOnly, TransactionalWork work) {
+                executeManaged(work);
+            }
+
+            @Override
+            public <T> T query(Function<PersistenceConnection, T> query) {
+                return query.apply(recordingConnection(executed));
+            }
+        };
+        DefaultCredentialProvisioning provisioning = new DefaultCredentialProvisioning(
+                new PostgresCredentialRepository(recording),
+                new PasswordHashing(new CountingPasswordEncoder(), new KdfConcurrencyThrottler(1)),
+                PasswordPolicy.defaults(), null, Clock.systemUTC());
+
+        provisioning.provisionFirstVerified(UUID.randomUUID(), "first@exeris.eu", "a-Long-Enough-Pw-1234".toCharArray());
+
+        assertThat(executed).containsExactly(PostgresCredentialRepository.LOCK_FOR_FIRST,
+                PostgresCredentialRepository.RLS_STATE, PostgresCredentialRepository.ANY_CREDENTIAL,
+                PostgresCredentialRepository.INSERT_VERIFIED_CREDENTIAL);
+    }
+
+    /** A connection whose statements record their SQL and report no rows, one row affected. */
+    private static PersistenceConnection recordingConnection(List<String> executed) {
+        QueryResult empty = (QueryResult) Proxy.newProxyInstance(QueryResult.class.getClassLoader(),
+                new Class<?>[] {QueryResult.class}, (proxy, method, args) -> defaultFor(method.getReturnType()));
+        return (PersistenceConnection) Proxy.newProxyInstance(PersistenceConnection.class.getClassLoader(),
+                new Class<?>[] {PersistenceConnection.class}, (proxy, method, args) -> {
+                    if (!method.getName().equals("prepare")) {
+                        return defaultFor(method.getReturnType());
+                    }
+                    executed.add((String) args[0]);
+                    return Proxy.newProxyInstance(PersistenceStatement.class.getClassLoader(),
+                            new Class<?>[] {PersistenceStatement.class}, (statement, m, a) -> {
+                                if (m.getReturnType() == PersistenceStatement.class) {
+                                    return statement;
+                                }
+                                if (m.getReturnType() == QueryResult.class) {
+                                    return empty;
+                                }
+                                return m.getName().equals("executeUpdate") ? Long.valueOf(1L)
+                                        : defaultFor(m.getReturnType());
+                            });
+                });
+    }
+
+    private static Object defaultFor(Class<?> type) {
+        if (type == boolean.class) {
+            return false;
+        }
+        if (type == long.class) {
+            return 0L;
+        }
+        if (type == int.class) {
+            return 0;
+        }
+        return null;
     }
 }
